@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "query": "Navin Fluorine",
+  "fetched_at": "2026-07-09T06:30:00Z",
+  "meta": {
+    "company": "Navin Fluorine International Ltd",
+    "ticker": "NAVINFLUOR",
+    "slug": "navinfluor",
+    "sector": "Chemicals",
+    "sub_sector": "Specialty & Fluorochemicals",
+    "screener_url": "https://www.screener.in/company/NAVINFLUOR/consolidated/",
+    "quarter": "Q4FY26",
+    "quarter_confirmed": true,
+    "expected_quarter": "Q4FY26",
+    "transcript_available": true
+  },
+  "inputs": { "cmp": 7689, "cmp_date": "2026-07-09", "shares_out_cr": 5.139, "market_cap_cr": 39514, "net_debt_cr": 1272 },
+  "fy26a": { "revenue": 3314, "ebitda": 1082, "ebitda_margin_pct": 33, "pat": 664, "net_margin_pct": 20, "gross_margin_pct": null },
+  "sources": {
+    "transcript_url": "https://www.bseindia.com/stockinfo/AnnPdfOpen.aspx?Pname=transcript.pdf",
+    "ppt_url": "https://www.bseindia.com/stockinfo/AnnPdfOpen.aspx?Pname=ppt.pdf",
+    "concall_date": "2026-05-01"
+  }
+}

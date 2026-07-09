@@ -1,11 +1,16 @@
-# Munshot — fetch-company (Step 6 test harness)
+# Munshot — fetch-company (Steps 6 + 7 test harness)
 # ---------------------------------------------------------------------------
 # Owner-run: Actions → "fetch-company" → Run workflow. Fetches ONE company's real
-# snapshot + FY26 actuals + latest concall transcript/PPT and uploads the raw bundle
-# as an artifact to download and inspect. No LLM, no KV, no report writing.
+# snapshot + FY26 actuals + latest concall transcript/PPT (Step 6), then — unless
+# run_extract is unchecked — runs the LLM extractor (Step 7) to write report.json
+# Sections B + C. Uploads pipeline/out/** (bundle + report.json) as an artifact to
+# download and inspect. No KV, no repo dispatch, no report committed back.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
-#   SCREENER_EMAIL, SCREENER_PASSWORD, FIRECRAWL_API_KEY, SCRAPEDO_API_KEY
+#   SCREENER_EMAIL, SCREENER_PASSWORD, FIRECRAWL_API_KEY, SCRAPEDO_API_KEY  (Step 6)
+#   OPENAI_API_KEY                                                          (Step 7)
+# Optional repo variable (Settings → Variables → Actions):
+#   OPENAI_MODEL  — overrides the default model constant in pipeline/lib/openai.mjs
 # ---------------------------------------------------------------------------
 
 name: fetch-company
@@ -18,6 +23,11 @@ on:
         required: true
         default: "Navin Fluorine"
         type: string
+      run_extract:
+        description: "Run the LLM extractor (Step 7) after fetch"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -31,7 +41,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
+
+      # Offline unit tests for the Step 7 extractor (pure JS, no deps, no OpenAI).
+      # Fails fast if prompt-building / assembly / source-tagging / validation regress.
+      - name: Test extractor (offline)
+        run: node pipeline/test/extract.test.mjs
 
       # No-save install (deps are NOT committed — see pipeline/BUNDLE.md).
       - name: Install deps (no-save) + Chromium
@@ -48,6 +63,16 @@ jobs:
           COMPANY: ${{ inputs.company }}
         # Untrusted input is passed via env (COMPANY), never interpolated into the shell.
         run: node pipeline/fetch-company.mjs "$COMPANY"
+
+      # Step 7: extract report Sections B + C into pipeline/out/<slug>/report.json.
+      # Gated on run_extract. Secrets stay in env (never echoed); the script never logs the key.
+      - name: Extract concall (LLM, Step 7)
+        if: ${{ inputs.run_extract }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          COMPANY: ${{ inputs.company }}
+        run: node pipeline/extract-concall.mjs "$COMPANY"
 
       - name: Upload bundle artifact
         if: always()

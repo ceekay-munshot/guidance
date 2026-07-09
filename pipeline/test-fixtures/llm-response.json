@@ -1,0 +1,48 @@
+{
+  "about": {
+    "products": ["Specialty fluorochemicals (CDMO / cGMP)", "High Performance Products", "Refrigerant gases (R32)"],
+    "segments": ["cGMP (CDMO)", "High Performance Products", "Specialty Chemicals"],
+    "segment_reported": false,
+    "revenue_mix": [
+      { "segment": "cGMP (CDMO)", "pct": 35 },
+      { "segment": "High Performance Products", "pct": 25 },
+      { "segment": "Specialty Chemicals", "pct": 40 }
+    ],
+    "margin_by_segment": [
+      { "segment": "cGMP (CDMO)", "ebitda_margin": 30 },
+      { "segment": "High Performance Products", "ebitda_margin": null }
+    ]
+  },
+  "concall": {
+    "guidance": [
+      { "metric": "Revenue growth", "horizon": "FY27", "statement": "Management guided to roughly 20% revenue growth in FY27.", "type": "directional", "value": "~20%" },
+      { "metric": "EBITDA margin", "horizon": "FY27", "statement": "Targeting an EBITDA margin of about 25% in FY27.", "type": "hard", "value": "~25%" },
+      { "metric": "Capex", "horizon": "FY27", "statement": "FY27 capex planned at Rs 650-700 crore for cGMP-4 and de-bottlenecking.", "type": "hard", "value": "Rs 650-700 cr" }
+    ],
+    "themes": [
+      { "theme": "end-demand", "stance": "Positive", "evidence": "CDMO order visibility described as the strongest in company history." },
+      { "theme": "commodity / input-cost trend", "stance": "Negative", "evidence": "Spot R32 prices corrected on Chinese oversupply, expected to lap by H2 FY27." },
+      { "theme": "capacity utilization", "stance": "Neutral", "evidence": "cGMP-4 to reach full utilisation over 18-24 months." }
+    ],
+    "tone_shift_vs_last_quarter": "More confident on CDMO order visibility, more guarded on refrigerants and agrochem timing.",
+    "expansion_flags": [
+      { "metric": "cGMP capacity", "yoy_delta": "+40%", "qoq_delta": "+18%", "driver": "Dahej cGMP-4 block commissioning" }
+    ],
+    "thesis_triggers": [
+      { "trigger": "Capex announcement", "flag": "Yes", "evidence": "FY27 capex of Rs 650-700 cr announced on the call." },
+      { "trigger": "M&A", "flag": "No", "evidence": "Management said nothing to announce on M&A." },
+      { "trigger": "Debt reduction", "flag": "Partial", "evidence": "Net debt peaks this year; deleveraging expected from FY28." }
+    ],
+    "classification": [
+      { "tag": "Operating leverage", "justification": "New cGMP blocks ramping lift blended margins as utilisation climbs." }
+    ],
+    "management_tone": [
+      { "theme": "cGMP-4 ramp", "tone": "Confident", "anchor": "Called order visibility the strongest in the company's history and confirmed the schedule." },
+      { "theme": "Refrigerant pricing", "tone": "Defensive", "anchor": "Framed the R32 correction as a headwind they expect to lap by H2 FY27." }
+    ],
+    "analyst_tone": {
+      "hot_themes": ["cGMP-4 ramp timeline", "FY27 margin bridge to 25%"],
+      "qa_tenor": "constructive"
+    }
+  }
+}
