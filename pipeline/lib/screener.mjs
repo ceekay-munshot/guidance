@@ -113,13 +113,59 @@ export function parseCompanyPage(html) {
   const concalls = parseConcalls($);
   if (!concalls.entries.length) notes.push("no concall documents found in Documents → Concalls");
 
+  // Valuation context for Step 9's F (current P/E + history/peer medians). Best-effort, never fatal.
+  const valuation_context = parseValuationContext($, ratios);
+
   return {
     name, sector, sub_sector,
     inputs: { cmp, cmp_date: null, shares_out_cr, market_cap_cr, net_debt_cr, net_debt_note, borrowings, cash },
     fy26a: { revenue, ebitda, ebitda_margin_pct, pat, net_margin_pct, gross_margin_pct },
     concalls,
+    valuation_context,
     notes,
   };
+}
+
+/**
+ * Best-effort valuation context for Step 9's F: the company's current (trailing) P/E, its historical
+ * median P/E, and the peer-median P/E from Screener's peer-comparison table. Screener exposes the
+ * peer median reliably in HTML; the company's 5-yr median P/E is often chart-only, so it may be null.
+ * Never throws, never fabricates — a missing field is null with a note.
+ */
+export function parseValuationContext($, ratios) {
+  const notes = [];
+  const current_pe = ratios?.["stock pe"] ?? ratios?.["price to earning"] ?? ratios?.["pe"] ?? null;
+  if (current_pe == null) notes.push("current P/E not in top-ratios");
+  // Historical median P/E — occasionally surfaced as a top-ratio; usually chart-only (then null).
+  const hist_median_pe = ratios?.["median pe"] ?? ratios?.["pe median"] ?? null;
+  if (hist_median_pe == null) notes.push("historical median P/E not in page HTML (chart-only) — left null");
+
+  // Peer comparison table (Documents → Peers). Find the P/E column + the "Median" row.
+  const peers = [];
+  let peer_median_pe = null;
+  try {
+    const $t = $("#peers table").first().length ? $("#peers table").first() : $("section#peers table").first();
+    if ($t && $t.length) {
+      const headers = [];
+      $t.find("thead th").each((_, th) => headers.push($(th).text().replace(/\s+/g, " ").trim()));
+      const peCol = headers.findIndex((h) => /^p\s*\/?\s*e$|^pe$/i.test(h.replace(/\s+/g, "")));
+      $t.find("tbody tr").each((_, tr) => {
+        const cells = $(tr).find("td").map((_, td) => $(td).text().replace(/\s+/g, " ").trim()).get();
+        const label = (cells[0] || "").toLowerCase();
+        const pe = peCol >= 0 ? parseNum(cells[peCol]) : null;
+        if (/median/.test(label)) peer_median_pe = pe;
+        else if (cells[0] && pe != null) peers.push({ name: cells[0], pe });
+      });
+      if (peer_median_pe == null && peers.length) {
+        const vals = peers.map((p) => p.pe).filter((n) => typeof n === "number").sort((a, b) => a - b);
+        if (vals.length) { const mid = Math.floor(vals.length / 2); peer_median_pe = vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2; }
+      }
+    } else notes.push("no #peers comparison table on the page");
+  } catch (e) {
+    notes.push(`peer table parse failed: ${e.message}`);
+  }
+
+  return { current_pe, hist_median_pe, peer_median_pe, peers: peers.slice(0, 12), notes };
 }
 
 /** Parse the Documents → Concalls list. Returns { entries: [{date, iso, transcript, ppt, title}] } newest-first. */

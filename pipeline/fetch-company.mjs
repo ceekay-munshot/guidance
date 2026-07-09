@@ -186,6 +186,8 @@ async function main() {
         ppt_url: latest?.ppt || null,
         concall_date: latest?.date || null,
       },
+      // Valuation context for Step 9's F sanity-check (current P/E + history/peer medians). Best-effort.
+      valuation_context: parsed.valuation_context,
       provenance: {
         cmp: prov(src, "Screener top-ratio 'Current Price'; cmp_date = fetch date (live price)"),
         shares_out_cr: prov(src, "derived: market_cap_cr / cmp"),

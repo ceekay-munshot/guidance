@@ -1,10 +1,12 @@
-# Munshot — fetch-company (Steps 6–8 test harness)
+# Munshot — fetch-company (Steps 6–9 test harness)
 # ---------------------------------------------------------------------------
 # Owner-run: Actions → "fetch-company" → Run workflow. Chains, per its toggles:
 #   fetch (Step 6) → extract B+C (Step 7) → web risks + thesis (Step 8a)
-#   → second-model verification (Step 8b)
-# Uploads pipeline/out/** (bundle + report.json + verification.json) as an artifact
-# to download and inspect. No KV, no repo dispatch, no report committed back.
+#   → second-model verification (Step 8b) → financial model E/F/G (Step 9a)
+#   → key_takeaways + end-to-end validation (Step 9b)
+# The last step emits the FIRST complete, schema-valid report.json. Uploads
+# pipeline/out/** (bundle + report.json + verification.json) as an artifact to
+# download and inspect. No KV, no repo dispatch, no report committed back.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   SCREENER_EMAIL, SCREENER_PASSWORD, FIRECRAWL_API_KEY, SCRAPEDO_API_KEY  (Step 6)
@@ -41,6 +43,16 @@ on:
         required: false
         default: true
         type: boolean
+      run_model:
+        description: "Run the financial model E/F/G (Step 9a)"
+        required: false
+        default: true
+        type: boolean
+      run_finalize:
+        description: "Run key_takeaways + end-to-end validation (Step 9b)"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -62,6 +74,7 @@ jobs:
         run: |
           node pipeline/test/extract.test.mjs
           node pipeline/test/research.test.mjs
+          node pipeline/test/model.test.mjs
 
       # No-save install (deps are NOT committed — see pipeline/BUNDLE.md).
       - name: Install deps (no-save) + Chromium
@@ -111,6 +124,26 @@ jobs:
           VERIFY_MODEL: ${{ vars.VERIFY_MODEL }}
           COMPANY: ${{ inputs.company }}
         run: node pipeline/verify-extract.mjs "$COMPANY"
+
+      # Step 9a: financial model — Sections E (rows + assumptions), F (valuation), G (next steps).
+      # The LLM supplies assumption levers + prose; the script computes every number deterministically.
+      - name: Model E / F / G (Step 9a)
+        if: ${{ inputs.run_model }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          COMPANY: ${{ inputs.company }}
+        run: node pipeline/model-report.mjs "$COMPANY"
+
+      # Step 9b: key_takeaways synthesis across B–G, then END-TO-END schema validation.
+      # This emits the first COMPLETE report.json and fails the job if it doesn't validate.
+      - name: Finalize + validate (Step 9b)
+        if: ${{ inputs.run_finalize }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          COMPANY: ${{ inputs.company }}
+        run: node pipeline/finalize-report.mjs "$COMPANY"
 
       - name: Upload bundle artifact
         if: always()

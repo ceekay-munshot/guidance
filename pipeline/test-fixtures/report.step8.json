@@ -1,0 +1,79 @@
+{
+  "meta": {
+    "company": "Navin Fluorine International Ltd",
+    "ticker": "NAVINFLUOR",
+    "slug": "navinfluor",
+    "quarter": "Q4FY26",
+    "quarter_confirmed": true,
+    "generated_at": "2026-07-09T11:00:00Z",
+    "transcript_available": true,
+    "sources": {
+      "transcript_url": "https://www.bseindia.com/stockinfo/AnnPdfOpen.aspx?Pname=transcript.pdf",
+      "ppt_url": "https://www.bseindia.com/stockinfo/AnnPdfOpen.aspx?Pname=ppt.pdf",
+      "concall_date": "2026-05-01"
+    },
+    "inputs": { "cmp": 7689, "cmp_date": "2026-07-09", "shares_out_cr": 5.139, "market_cap_cr": 39514, "net_debt_cr": 1272 }
+  },
+  "key_takeaways": [],
+  "about": {
+    "sector": "Chemicals",
+    "sub_sector": "Specialty & Fluorochemicals",
+    "products": ["Specialty fluorochemicals (CDMO / cGMP)", "High Performance Products", "Refrigerant gases (R32)"],
+    "segments": ["cGMP (CDMO)", "High Performance Products", "Specialty Chemicals"],
+    "segment_reported": false,
+    "revenue_mix": [
+      { "segment": "cGMP (CDMO)", "pct": 35 },
+      { "segment": "High Performance Products", "pct": 25 },
+      { "segment": "Specialty Chemicals", "pct": 40 }
+    ],
+    "margin_by_segment": [
+      { "segment": "cGMP (CDMO)", "ebitda_margin": 30 }
+    ]
+  },
+  "concall": {
+    "guidance": [
+      { "metric": "Revenue growth", "horizon": "FY27", "statement": "Management guided to roughly 20% revenue growth in FY27.", "type": "directional", "value": "~20%", "source": "Transcript" },
+      { "metric": "EBITDA margin", "horizon": "FY27", "statement": "Targeting an EBITDA margin of about 25% in FY27.", "type": "hard", "value": "~25%", "source": "Transcript" },
+      { "metric": "Capex", "horizon": "FY27", "statement": "FY27 capex planned at Rs 650-700 crore for cGMP-4 and de-bottlenecking.", "type": "hard", "value": "Rs 650-700 cr", "source": "Transcript" }
+    ],
+    "themes": [
+      { "theme": "end-demand", "stance": "Positive", "evidence": "CDMO order visibility described as the strongest in company history.", "source": "Transcript" },
+      { "theme": "commodity / input-cost trend", "stance": "Negative", "evidence": "Spot R32 prices corrected on Chinese oversupply, expected to lap by H2 FY27.", "source": "Transcript" },
+      { "theme": "capacity utilization", "stance": "Neutral", "evidence": "cGMP-4 to reach full utilisation over 18-24 months.", "source": "Transcript" }
+    ],
+    "tone_shift_vs_last_quarter": "More confident on CDMO order visibility, more guarded on refrigerants and agrochem timing.",
+    "expansion_flags": [
+      { "metric": "cGMP capacity", "yoy_delta": "+40%", "qoq_delta": "+18%", "driver": "Dahej cGMP-4 block commissioning" }
+    ],
+    "thesis_triggers": [
+      { "trigger": "Capex announcement", "flag": "Yes", "evidence": "FY27 capex of Rs 650-700 cr announced on the call." },
+      { "trigger": "M&A", "flag": "No", "evidence": "Management said nothing to announce on M&A." },
+      { "trigger": "Debt reduction", "flag": "Partial", "evidence": "Net debt peaks this year; deleveraging expected from FY28." }
+    ],
+    "classification": [
+      { "tag": "Operating leverage", "justification": "New cGMP blocks ramping lift blended margins as utilisation climbs." }
+    ],
+    "risks": [
+      { "risk": "Pending GST demand of ~Rs 120 cr under appeal before the CESTAT; an adverse ruling would dent FY27 cash flows. (Source: https://www.bseindia.com/xml-data/corpfiling/AttachHis/navin-gst.pdf)", "type": "Litigation", "source": "Web" },
+      { "risk": "ICRA flagged the debt-funded cGMP-4 capex peak as a monitorable in its latest rationale. (Source: https://www.icra.in/Rationale/ShowRationaleReport?Id=98231)", "type": "Rating action", "source": "Web" }
+    ],
+    "management_tone": [
+      { "theme": "cGMP-4 ramp", "tone": "Confident", "anchor": "Called order visibility the strongest in the company's history and confirmed the schedule." },
+      { "theme": "Refrigerant pricing", "tone": "Defensive", "anchor": "Framed the R32 correction as a headwind they expect to lap by H2 FY27." }
+    ],
+    "analyst_tone": {
+      "hot_themes": ["cGMP-4 ramp timeline", "FY27 margin bridge to 25%"],
+      "qa_tenor": "constructive"
+    }
+  },
+  "thesis": [
+    { "point": "CDMO mix shift structurally lifts blended EBITDA margins toward the mid-20s as high-value molecules ramp.", "falsifier": "Blended EBITDA margin stays below 22% through FY27 despite cGMP-4 ramping.", "source": "Web" },
+    { "point": "cGMP-4 commissioning roughly doubles high-value capacity, underwriting multi-year revenue growth.", "falsifier": "cGMP-4 utilisation stalls below 50% two years after commissioning.", "source": "Est." },
+    { "point": "The R32 headwind is cyclical and laps by H2 FY27, restoring the refrigerants contribution.", "falsifier": "R32 realisations remain depressed into FY28 with no volume offset.", "source": "Web" }
+  ],
+  "anti_thesis": [
+    { "point": "Net debt peaks on the capex cycle; a demand air-pocket would strain the balance sheet.", "falsifier": "Net debt / EBITDA exceeds 3x at any point in FY27.", "source": "Web" },
+    { "point": "Chinese oversupply in fluorochemicals could extend pricing pressure beyond refrigerants.", "falsifier": "Specialty-chemicals gross margin compresses more than 300 bps YoY in FY27.", "source": "Web" },
+    { "point": "Execution risk on the cGMP-4 ramp given the historical lumpiness of CDMO revenue.", "falsifier": "cGMP-4 commercial supply slips beyond H1 FY28.", "source": "Est." }
+  ]
+}
