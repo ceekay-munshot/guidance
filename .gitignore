@@ -1,0 +1,10 @@
+# Pipeline output bundles — raw fetched data, never committed.
+pipeline/out/
+
+# No-save dependency installs (frontend is CDN-only; pipeline deps are installed
+# at run time in CI, not committed — see pipeline/BUNDLE.md).
+node_modules/
+package-lock.json
+
+# OS / editor noise
+.DS_Store
