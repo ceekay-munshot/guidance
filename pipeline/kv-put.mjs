@@ -35,9 +35,13 @@ async function main() {
   const [cmd, slug, arg3, arg4] = process.argv.slice(2);
   if (!cmd || !slug) { log.err("usage: kv-put.mjs <status|report> <slug> [state] [message]"); process.exitCode = 1; return; }
 
+  // kv-put only runs for LIVE (slugged) runs — the Worker's queued status becomes a visible report
+  // ONLY through these writes. Missing creds must therefore FAIL LOUDLY (red job), not finish green
+  // while the client polls to timeout. Manual runs pass a blank slug and skip these steps entirely.
   if (!kvConfigured()) {
-    log.warn(`CF KV not configured (CF_ACCOUNT_ID / CF_KV_NAMESPACE_ID / CF_API_TOKEN) — skipping KV ${cmd} for "${slug}"`);
-    return; // exit 0 — don't fail the pipeline just because KV isn't wired
+    log.err(`CF KV not configured (need CF_ACCOUNT_ID / CF_KV_NAMESPACE_ID / CF_API_TOKEN) — cannot ${cmd} "${slug}". A live run requires the three Cloudflare Actions secrets.`);
+    process.exitCode = 1;
+    return;
   }
 
   try {

@@ -68,6 +68,24 @@ async function kvJson(env, key) {
   try { return await env.REPORTS.get(key, { type: "json" }); } catch { return null; }
 }
 
+/**
+ * The canonical KV slug for a company. If the input exactly matches a universe entry's name OR
+ * ticker, use that entry's curated slug — so aliases of the same company (e.g. "TCS" vs
+ * "Tata Consultancy Services Ltd") share ONE cache key instead of dispatching duplicate runs.
+ * Free-text companies not in the universe fall back to slugify(company). Always derived server-side.
+ */
+async function canonicalSlug(env, request, company) {
+  const q = company.trim().toLowerCase();
+  try {
+    const universe = await readAssetJson(env, request, "/data/universe.json");
+    if (Array.isArray(universe)) {
+      const hit = universe.find((c) => (c.name || "").toLowerCase() === q || (c.ticker || "").toLowerCase() === q);
+      if (hit && hit.slug) return slugify(hit.slug);
+    }
+  } catch { /* universe unavailable → fall back to the plain slug */ }
+  return slugify(company);
+}
+
 /** Is a stored report newer than FRESH_DAYS? */
 function isFresh(report) {
   const g = report && report.meta && report.meta.generated_at;
@@ -130,8 +148,9 @@ async function handleAnalyze(env, request) {
   let body = {};
   try { body = (await request.json()) || {}; } catch { /* empty/invalid body */ }
   const company = String(body.company || body.ticker || "").trim();
-  const slug = slugify(company); // NOT body.slug — the client cannot choose the KV key
-  if (!company || !slug || slug === "company") return json({ ok: false, status: "error", error: "missing company" }, 400);
+  if (!company) return json({ ok: false, status: "error", error: "missing company" }, 400);
+  const slug = await canonicalSlug(env, request, company); // server-side; NOT body.slug
+  if (!slug || slug === "company") return json({ ok: false, status: "error", error: "missing company" }, 400);
   const force = body.force === true;
 
   const [report, status] = await Promise.all([kvJson(env, `report:${slug}`), kvJson(env, `status:${slug}`)]);
@@ -168,6 +187,11 @@ async function handleReport(env, request, url) {
 
   const [report, status] = await Promise.all([kvJson(env, `report:${slug}`), kvJson(env, `status:${slug}`)]);
   if (isInFlight(status) && !isStatusStale(status)) return json({ ok: true, slug, status: status.state, message: status.message });
+  // A failure from a run AFTER the stored report was generated wins — don't hide a failed refresh
+  // behind a stale cached report.
+  const reportT = report && report.meta && report.meta.generated_at ? Date.parse(report.meta.generated_at) : -Infinity;
+  const statusT = status && status.updated_at ? Date.parse(status.updated_at) : -Infinity;
+  if (status && status.state === "error" && statusT > reportT) return json({ ok: false, slug, status: "error", error: status.message || "Analysis failed." });
   if (report) return json({ ok: true, slug, status: "done", report });
   if (status && status.state === "error") return json({ ok: false, slug, status: "error", error: status.message || "Analysis failed." });
   return json({ ok: false, slug, status: "unknown" });

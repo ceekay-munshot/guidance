@@ -33,7 +33,12 @@ function makeEnv({ token = "tok", kv = {} } = {}) {
       get: async (k, opt) => { const v = store.get(k); return v == null ? null : (opt && opt.type === "json" ? JSON.parse(v) : v); },
       put: async (k, v) => { store.set(k, String(v)); },
     },
-    ASSETS: { fetch: async () => new Response("{}", { status: 200 }) },
+    ASSETS: { fetch: async (req) => {
+      if (new URL(req.url).pathname === "/data/universe.json") {
+        return new Response(JSON.stringify([{ name: "Navin Fluorine International Ltd", ticker: "NAVINFLUOR", slug: "navin-fluorine-international" }]), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    } },
     __store: store,
   };
 }
@@ -60,6 +65,14 @@ env = makeEnv();
 body = await (await post(env, "/api/analyze", { company: CO, slug: "some-other-company" })).json();
 ok(body.slug === SLUG && dispatches[0].body.inputs.slug === SLUG, "client slug is ignored — slug derived from company");
 ok(env.__store.has(`status:${SLUG}`) && !env.__store.has("status:some-other-company"), "no KV write under the attacker-chosen key");
+
+// ── alias dedup: a company's ticker and full name map to ONE canonical universe slug ──
+dispatches = [];
+env = makeEnv();
+const r1 = await (await post(env, "/api/analyze", { company: "NAVINFLUOR" })).json();                       // ticker
+ok(r1.slug === "navin-fluorine-international" && dispatches.length === 1, "ticker alias → canonical universe slug");
+const r2 = await (await post(env, "/api/analyze", { company: "Navin Fluorine International Ltd" })).json(); // full name (status now in-flight)
+ok(r2.slug === "navin-fluorine-international" && dispatches.length === 1, "name alias → same key, no duplicate dispatch");
 
 // ── analyze: fresh cached report → done, no dispatch ──
 dispatches = [];
@@ -104,8 +117,15 @@ ok(body.status === "running", "fresh in-flight run wins over an existing report 
 body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j(freshReport), [`status:${SLUG}`]: j({ state: "running", updated_at: agoIso(20 * 60 * 1000) }) } }), `/api/report?slug=${SLUG}`)).json();
 ok(body.status === "done" && body.report, "stale in-flight status falls back to serving the report");
 
+// a failed refresh NEWER than the cached report surfaces the error (doesn't hide behind stale data)
+body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j(staleReport), [`status:${SLUG}`]: j({ state: "error", updated_at: nowIso(), message: "run failed" }) } }), `/api/report?slug=${SLUG}`)).json();
+ok(body.status === "error" && /run failed/.test(body.error), "failed refresh (newer than report) → error, not the stale report");
+// but an OLD error behind a NEWER report still serves the report
+body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j(freshReport), [`status:${SLUG}`]: j({ state: "error", updated_at: agoIso(60 * 60 * 1000), message: "old" }) } }), `/api/report?slug=${SLUG}`)).json();
+ok(body.status === "done", "an old error behind a newer report → still serves the report");
+
 body = await (await get(makeEnv({ kv: { [`status:${SLUG}`]: j({ state: "error", message: "not resolvable" }) } }), `/api/report?slug=${SLUG}`)).json();
-ok(body.status === "error" && /not resolvable/.test(body.error), "status error → error + message");
+ok(body.status === "error" && /not resolvable/.test(body.error), "status error (no report) → error + message");
 ok((await (await get(makeEnv(), `/api/report?slug=${SLUG}`)).json()).status === "unknown", "no report/status → unknown");
 
 // ── the token is never leaked in a response ──
