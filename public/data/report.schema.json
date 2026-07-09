@@ -1,0 +1,357 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://munshot.app/data/report.schema.json",
+  "title": "Munshot — Concall Deep Dive Report",
+  "description": "The single contract for one company's latest-quarter earnings-call research report. Every later build step (renderer, editable model, valuation, verdict) keys off this shape. One run = one company. Facts carry a `source` wherever the schema allows: 'Transcript' | 'PPT' | 'Web' | 'Est.'.",
+  "type": "object",
+  "required": ["meta", "key_takeaways", "about", "concall", "thesis", "anti_thesis", "financials", "valuation", "next_steps"],
+  "additionalProperties": false,
+
+  "definitions": {
+    "source": {
+      "description": "Provenance of a fact.",
+      "type": "string",
+      "enum": ["Transcript", "PPT", "Web", "Est."]
+    }
+  },
+
+  "properties": {
+    "meta": {
+      "type": "object",
+      "description": "Run identity, price inputs, and source links.",
+      "required": ["company", "ticker", "slug", "quarter", "quarter_confirmed", "generated_at", "transcript_available", "sources", "inputs"],
+      "additionalProperties": false,
+      "properties": {
+        "company": { "type": "string", "description": "Full company name." },
+        "ticker": { "type": "string", "description": "NSE/BSE trading symbol." },
+        "slug": { "type": "string", "description": "URL-safe id used as the KV key and the /api/report?slug= param.", "pattern": "^[a-z0-9-]+$" },
+        "quarter": { "type": "string", "description": "Reported quarter, e.g. 'Q4FY26'.", "pattern": "^Q[1-4]FY[0-9]{2}$" },
+        "quarter_confirmed": { "type": "boolean", "description": "True when the quarter was verified against the transcript/PPT, not inferred." },
+        "generated_at": { "type": "string", "format": "date-time", "description": "ISO-8601 timestamp the pipeline finished writing this report." },
+        "transcript_available": { "type": "boolean", "description": "Whether a concall transcript was found. Downstream `source: 'Transcript'` facts require this to be true." },
+        "sources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "transcript_url": { "type": ["string", "null"], "description": "Link to the concall transcript." },
+            "ppt_url": { "type": ["string", "null"], "description": "Link to the investor presentation." },
+            "concall_date": { "type": ["string", "null"], "format": "date", "description": "Date the earnings call was held." }
+          }
+        },
+        "inputs": {
+          "type": "object",
+          "description": "Price/size inputs the valuation math must reconcile against. market_cap_cr = cmp * shares_out_cr; EV = market_cap_cr + net_debt_cr.",
+          "additionalProperties": false,
+          "properties": {
+            "cmp": { "type": "number", "description": "Current market price per share (INR)." },
+            "cmp_date": { "type": "string", "format": "date", "description": "Date CMP was captured." },
+            "shares_out_cr": { "type": "number", "description": "Shares outstanding in crores." },
+            "market_cap_cr": { "type": "number", "description": "Market capitalisation in INR crore." },
+            "net_debt_cr": { "type": "number", "description": "Net debt (negative if net cash) in INR crore." }
+          }
+        }
+      }
+    },
+
+    "key_takeaways": {
+      "type": "array",
+      "description": "5-7 decision-relevant bullets. The tl;dr an analyst reads first.",
+      "items": { "type": "string" },
+      "minItems": 3,
+      "maxItems": 9
+    },
+
+    "about": {
+      "type": "object",
+      "description": "Business overview — what the company does and how revenue/margin split.",
+      "required": ["sector", "sub_sector", "products", "segments", "segment_reported", "revenue_mix", "margin_by_segment"],
+      "additionalProperties": false,
+      "properties": {
+        "sector": { "type": "string" },
+        "sub_sector": { "type": "string" },
+        "products": { "type": "array", "items": { "type": "string" } },
+        "segments": { "type": "array", "items": { "type": "string" } },
+        "segment_reported": { "type": "boolean", "description": "True when the company reports segment splits; false when the mix below is estimated." },
+        "revenue_mix": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["segment", "pct"],
+            "properties": {
+              "segment": { "type": "string" },
+              "pct": { "type": "number", "description": "Share of revenue, percent (0-100). Should sum to ~100 across segments." }
+            }
+          }
+        },
+        "margin_by_segment": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["segment", "ebitda_margin"],
+            "properties": {
+              "segment": { "type": "string" },
+              "ebitda_margin": { "type": "number", "description": "Segment EBITDA margin, percent." }
+            }
+          }
+        }
+      }
+    },
+
+    "concall": {
+      "type": "object",
+      "description": "Structured read of the earnings call itself.",
+      "required": ["guidance", "themes", "tone_shift_vs_last_quarter", "expansion_flags", "thesis_triggers", "classification", "risks", "management_tone", "analyst_tone"],
+      "additionalProperties": false,
+      "properties": {
+        "guidance": {
+          "type": "array",
+          "description": "Forward-looking statements management made.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["metric", "horizon", "statement", "type", "value", "source"],
+            "properties": {
+              "metric": { "type": "string", "description": "What is being guided, e.g. 'Revenue growth'." },
+              "horizon": { "type": "string", "description": "Time frame, e.g. 'FY27', 'Next 2-3 years'." },
+              "statement": { "type": "string", "description": "Verbatim-ish paraphrase of what management said." },
+              "type": { "type": "string", "enum": ["hard", "directional"], "description": "'hard' = numeric commitment; 'directional' = qualitative lean." },
+              "value": { "type": ["string", "null"], "description": "Extracted number/range if hard, else null." },
+              "source": { "$ref": "#/definitions/source" }
+            }
+          }
+        },
+        "themes": {
+          "type": "array",
+          "description": "Recurring topics on the call with a stance and evidence.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["theme", "stance", "evidence", "source"],
+            "properties": {
+              "theme": { "type": "string" },
+              "stance": { "type": "string", "enum": ["Positive", "Negative", "Neutral"] },
+              "evidence": { "type": "string" },
+              "source": { "$ref": "#/definitions/source" }
+            }
+          }
+        },
+        "tone_shift_vs_last_quarter": { "type": "string", "description": "How management's tone/framing moved versus the prior call." },
+        "expansion_flags": {
+          "type": "array",
+          "description": "Metrics that moved materially (capacity, orderbook, capex, headcount…).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["metric", "yoy_delta", "qoq_delta", "driver"],
+            "properties": {
+              "metric": { "type": "string" },
+              "yoy_delta": { "type": ["string", "null"], "description": "Year-on-year change, e.g. '+18%'." },
+              "qoq_delta": { "type": ["string", "null"], "description": "Quarter-on-quarter change." },
+              "driver": { "type": "string" }
+            }
+          }
+        },
+        "thesis_triggers": {
+          "type": "array",
+          "description": "Pre-defined checks: did the call confirm the bull-case triggers?",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["trigger", "flag", "evidence"],
+            "properties": {
+              "trigger": { "type": "string" },
+              "flag": { "type": "string", "enum": ["Yes", "No", "Partial"] },
+              "evidence": { "type": "string" }
+            }
+          }
+        },
+        "classification": {
+          "type": "array",
+          "description": "Tags that place the quarter in context (e.g. 'Beat', 'Guidance raise', 'One-off').",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tag", "justification"],
+            "properties": {
+              "tag": { "type": "string" },
+              "justification": { "type": "string" }
+            }
+          }
+        },
+        "risks": {
+          "type": "array",
+          "description": "Risks, typically corroborated from the web rather than the call.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["risk", "type", "source"],
+            "properties": {
+              "risk": { "type": "string" },
+              "type": { "type": "string", "description": "Risk category, e.g. 'Demand', 'Regulatory', 'Concentration'." },
+              "source": { "$ref": "#/definitions/source" }
+            }
+          }
+        },
+        "management_tone": {
+          "type": "array",
+          "description": "Per-theme read on how confident management sounded.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["theme", "tone", "anchor"],
+            "properties": {
+              "theme": { "type": "string" },
+              "tone": { "type": "string", "enum": ["Confident", "Neutral", "Defensive"] },
+              "anchor": { "type": "string", "description": "The phrase/exchange that anchors this read." }
+            }
+          }
+        },
+        "analyst_tone": {
+          "type": "object",
+          "description": "How the sell-side analysts on the call behaved.",
+          "additionalProperties": false,
+          "required": ["hot_themes", "qa_tenor"],
+          "properties": {
+            "hot_themes": { "type": "array", "items": { "type": "string" }, "description": "Topics analysts pressed on most." },
+            "qa_tenor": { "type": "string", "enum": ["skeptical", "constructive", "perfunctory"] }
+          }
+        }
+      }
+    },
+
+    "thesis": {
+      "type": "array",
+      "description": "Bull case. Each point pairs with the observation that would falsify it.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["point", "falsifier", "source"],
+        "properties": {
+          "point": { "type": "string" },
+          "falsifier": { "type": "string", "description": "What we'd have to see to conclude this point is wrong." },
+          "source": { "$ref": "#/definitions/source" }
+        }
+      }
+    },
+
+    "anti_thesis": {
+      "type": "array",
+      "description": "Bear case, symmetric to `thesis`.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["point", "falsifier", "source"],
+        "properties": {
+          "point": { "type": "string" },
+          "falsifier": { "type": "string" },
+          "source": { "$ref": "#/definitions/source" }
+        }
+      }
+    },
+
+    "financials": {
+      "type": "object",
+      "description": "The editable model. `rows` is the P&L skeleton; `assumptions` are the levers step-5 will make editable.",
+      "required": ["rows", "assumptions"],
+      "additionalProperties": false,
+      "properties": {
+        "rows": {
+          "type": "array",
+          "description": "One object per metric. Convention (in order): Revenue, Gross margin %, EBITDA, EBITDA margin %, Adjusted EBITDA margin % (optional), PAT, Net margin %. Absolute figures in INR crore; '%' metrics as percentages.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["metric", "fy26a", "fy27e", "fy28e", "driver"],
+            "properties": {
+              "metric": { "type": "string" },
+              "fy26a": { "type": ["number", "null"], "description": "FY26 actual." },
+              "fy27e": { "type": ["number", "null"], "description": "FY27 estimate." },
+              "fy28e": { "type": ["number", "null"], "description": "FY28 estimate." },
+              "driver": { "type": "string", "description": "One line on what moves this row." }
+            }
+          }
+        },
+        "assumptions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["revenue_growth", "margin", "note"],
+          "properties": {
+            "revenue_growth": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["fy27", "fy28", "basis"],
+              "properties": {
+                "fy27": { "type": "number", "description": "Assumed FY27 revenue growth, percent." },
+                "fy28": { "type": "number", "description": "Assumed FY28 revenue growth, percent." },
+                "basis": { "type": "string", "description": "What the growth assumption rests on." }
+              }
+            },
+            "margin": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["fy27", "fy28", "basis"],
+              "properties": {
+                "fy27": { "type": "number", "description": "Assumed FY27 EBITDA margin, percent." },
+                "fy28": { "type": "number", "description": "Assumed FY28 EBITDA margin, percent." },
+                "basis": { "type": "string" }
+              }
+            },
+            "note": { "type": "string", "description": "Caveats — what could break the model." }
+          }
+        }
+      }
+    },
+
+    "valuation": {
+      "type": "object",
+      "description": "Multiples implied by meta.inputs + financials. Must be internally consistent: PE = cmp / (PAT/shares_out_cr); EV/EBITDA = (market_cap_cr + net_debt_cr) / EBITDA; P/S = market_cap_cr / Revenue.",
+      "required": ["pe", "ev_ebitda", "price_sales", "sanity_check"],
+      "additionalProperties": false,
+      "properties": {
+        "pe": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fy27e", "fy28e"],
+          "properties": {
+            "fy27e": { "type": "number" },
+            "fy28e": { "type": "number" }
+          }
+        },
+        "ev_ebitda": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fy27e", "fy28e"],
+          "properties": {
+            "fy27e": { "type": "number" },
+            "fy28e": { "type": "number" }
+          }
+        },
+        "price_sales": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fy27e", "fy28e"],
+          "properties": {
+            "fy27e": { "type": "number" },
+            "fy28e": { "type": "number" }
+          }
+        },
+        "sanity_check": { "type": "string", "description": "One paragraph reconciling the multiples to the story — is the price already pricing in the guidance?" }
+      }
+    },
+
+    "next_steps": {
+      "type": "object",
+      "description": "The verdict and what to watch.",
+      "required": ["monitorables", "rerating_triggers", "conviction", "conviction_note"],
+      "additionalProperties": false,
+      "properties": {
+        "monitorables": { "type": "array", "items": { "type": "string" }, "description": "Metrics to track next quarter." },
+        "rerating_triggers": { "type": "array", "items": { "type": "string" }, "description": "Events that would move the multiple." },
+        "conviction": { "type": "string", "enum": ["Buy-watch", "Hold-watch", "Avoid-watch"], "description": "The Buy/Hold/Avoid-watch verdict." },
+        "conviction_note": { "type": "string", "description": "One paragraph justifying the verdict." }
+      }
+    }
+  }
+}
