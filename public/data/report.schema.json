@@ -31,11 +31,13 @@
         "transcript_available": { "type": "boolean", "description": "Whether a concall transcript was found. Downstream `source: 'Transcript'` facts require this to be true." },
         "sources": {
           "type": "object",
+          "description": "Source links. All three keys must be present so link rendering has stable fields to read; use null when a link/date is unavailable.",
           "additionalProperties": false,
+          "required": ["transcript_url", "ppt_url", "concall_date"],
           "properties": {
-            "transcript_url": { "type": ["string", "null"], "description": "Link to the concall transcript." },
-            "ppt_url": { "type": ["string", "null"], "description": "Link to the investor presentation." },
-            "concall_date": { "type": ["string", "null"], "format": "date", "description": "Date the earnings call was held." }
+            "transcript_url": { "type": ["string", "null"], "description": "Link to the concall transcript, or null." },
+            "ppt_url": { "type": ["string", "null"], "description": "Link to the investor presentation, or null." },
+            "concall_date": { "type": ["string", "null"], "format": "date", "description": "Date the earnings call was held, or null." }
           }
         },
         "inputs": {
