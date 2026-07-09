@@ -1,0 +1,31 @@
+{
+  "revenue_growth_fy27": 20,
+  "revenue_growth_fy28": 18,
+  "revenue_growth_basis": "Management guided to ~20% FY27 revenue growth on the call; FY28 tapered slightly as the cGMP-4 base builds.",
+  "ebitda_margin_fy27": 25,
+  "ebitda_margin_fy28": 26,
+  "net_margin_fy27": 20,
+  "net_margin_fy28": 21,
+  "margin_basis": "Management targeted ~25% FY27 EBITDA margin as high-value CDMO mix rises; a further ~100bps in FY28 on operating leverage.",
+  "gross_margin_fy27": null,
+  "gross_margin_fy28": null,
+  "driver_revenue": "cGMP-4 ramp from H2 FY27 plus two commercial CDMO molecules; HPP flattish until refrigerants recover.",
+  "driver_gross_margin": "Not reported by the company; richer CDMO mix is directionally supportive.",
+  "driver_ebitda": "Operating leverage on the new Dahej blocks as utilisation climbs.",
+  "driver_ebitda_margin": "Mix shift to high-value CDMO and the R32 headwind lapping by H2 FY27; sustainable if utilisation holds.",
+  "driver_pat": "EBITDA growth partly offset by higher interest and depreciation on the capex cycle.",
+  "driver_net_margin": "Margin expansion outpaces the drag from capex-linked D&A and interest.",
+  "reports_adj_ebitda": false,
+  "adj_ebitda_margin_fy26": null,
+  "adj_ebitda_margin_fy27": null,
+  "adj_ebitda_margin_fy28": null,
+  "driver_adj_ebitda": "Company does not report an adjusted EBITDA KPI.",
+  "assumptions_note": "The model breaks if cGMP-4 utilisation lags the 18-24 month ramp or if R32/agrochem weakness persists into FY28; net-debt-funded capex makes interest sensitivity non-trivial. The Est. values are a directional view — change them first if you disagree.",
+  "rerating_triggers": [
+    "cGMP-4 ramping faster than the 18-24 month guide",
+    "A new marquee CDMO contract that diversifies molecule concentration",
+    "Margin surprise above 25% ahead of schedule"
+  ],
+  "conviction": "Hold-watch",
+  "conviction_note": "A high-quality fluorochemicals franchise with a genuine CDMO growth engine, but the forward multiple already discounts flawless cGMP-4 execution. Risk-reward is balanced; prefer to add on a ramp-driven earnings surprise or a de-rating. This is a research observation, not investment advice."
+}

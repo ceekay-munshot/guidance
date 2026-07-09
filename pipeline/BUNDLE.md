@@ -59,6 +59,10 @@ Every number maps 1:1 onto `public/data/report.schema.json`:
   "sources": {                   // → report.schema meta.sources
     "transcript_url", "ppt_url", "concall_date"
   },
+  "valuation_context": {         // Step 9 F sanity-check (best-effort; nulls when absent)
+    "current_pe", "hist_median_pe", "peer_median_pe",
+    "peers": [ { "name", "pe" } ]
+  },
   "provenance": { "<field>": { "source": "<url>", "fetched_at": "…", "note": "…" } },
   "documents": { "transcript": { "url", "chars", "via", "file" }, "ppt": { … } },
   "diagnostics": { "notes": [ … ], "attempts": { "transcript": [ … ] } },
@@ -90,10 +94,10 @@ it owns, and writes it back. The shape is `public/data/report.schema.json` (the 
   },
   "thesis":         [ … ],// Step 8a — Section D  (falsifiable bull points, Web/Est.)
   "anti_thesis":    [ … ],// Step 8a — Section D  (falsifiable bear points, Web/Est.)
-  "key_takeaways":  [],   // Step 9 — synthesis across B–G (needs F + G, so it waits)
-  "financials":     { … },// Step 9 — from bundle.fy26a + the model
-  "valuation":      { … },// Step 9
-  "next_steps":     [ … ] // Step 9
+  "key_takeaways":  [ … ],// Step 9b — 5-7 bullet synthesis across B–G (written LAST)
+  "financials":     { … },// Step 9a — E: rows (from bundle.fy26a + levers) + assumptions
+  "valuation":      { … },// Step 9a — F: multiples + "vs history/peers" sanity-check
+  "next_steps":     { … } // Step 9a — G: monitorables, re-rating triggers, conviction
 }
 ```
 
@@ -165,6 +169,40 @@ OPENAI_API_KEY=…  [ANTHROPIC_API_KEY=…]  node pipeline/verify-extract.mjs "N
 - Offline unit tests (`pipeline/test/research.test.mjs`, no deps, no network) cover risk/thesis
   assembly, the falsifier rule, and the verifier flagging logic (a planted hallucinated guidance
   item is asserted flagged, dropped, and logged).
+
+**Step 9a** (`model-report.mjs`) builds the numeric report — **E** (financial model), **F**
+(valuation), **G** (next steps):
+
+```sh
+OPENAI_API_KEY=…  node pipeline/model-report.mjs "Navin Fluorine"
+```
+
+- The LLM returns only **assumption levers** (growth %, margin %) + prose; the **script computes
+  every rupee figure and every multiple deterministically**, mirroring the frontend's `computeModel`
+  (`public/js/report.js`) so the seeded `report.json` reconciles with the live dashboard on load.
+- **E** — FY26A from the bundle; FY27E/FY28E revenue = prior × (1+growth), EBITDA/PAT = revenue ×
+  margin%. Each assumption is tagged **`mgmt guidance`** where C.1 guided it, else **`Est.`** (the
+  Est. line is the first thing to change if you disagree). Gross margin stays `null` unless
+  commentary supports it; the `adj_ebitda_margin_pct` row appears only if the company reports it.
+- **F** — `pe`/`ev_ebitda`/`price_sales` from `market_cap = cmp×shares`, `ev = market_cap+net_debt`
+  (n.m. when a denominator ≤ 0). The `sanity_check` cites the **actual** multiples and, when the read
+  is positive but the forward P/E is rich versus the **history/peer medians** in
+  `bundle.valuation_context`, flags the disconnect with the real numbers.
+- **G** — `monitorables` derived from C.1 guidance (delivered-vs-guided), `rerating_triggers`
+  synthesised from thesis + guidance, and the Buy/Hold/Avoid-watch `conviction` (a research
+  observation, not advice).
+
+**Step 9b** (`finalize-report.mjs`) writes the **`key_takeaways`** synthesis across B–G (done LAST,
+5–7 bullets), strips internal `_step*` metadata, and **validates the COMPLETE `report.json`
+end-to-end against `report.schema.json`, failing loudly** on any violation. This is the first time
+the pipeline emits a full, schema-valid report.
+
+- Offline unit tests (`pipeline/test/model.test.mjs`, no deps/network/LLM) cover the
+  guidance→assumption mapping + basis tags, the row math, the **seeded-valuation == frontend
+  recompute** consistency (it imports the real `computeModel`), the n.m. edges, the sanity-check
+  trigger logic, monitorables-from-guidance, the key_takeaways count, and full-report validation.
+- Preview it: drop the generated `report.json` in place of `public/data/sample-report.json` locally
+  to render the whole dashboard on real data.
 
 ## What "graceful degradation" means here
 
