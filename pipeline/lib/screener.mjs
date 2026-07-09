@@ -175,6 +175,17 @@ export function parseValuationContext($, ratios) {
     notes.push(`peer table parse failed: ${e.message}`);
   }
 
+  // When the peer median couldn't be read, dump a bounded snapshot of the page's tables + the
+  // #peers section so the next artifact reveals Screener's real structure (this runs blind in CI).
+  if (peer_median_pe == null) {
+    try {
+      const sigs = $("table.data-table").map((_, t) => $(t).find("thead th").map((_, th) => $(th).text().trim()).get().join("|")).get();
+      notes.push(`DIAG peers: #peers=${$("#peers").length} rows=${$("#peers table tbody tr").length}; data-tables=[${sigs.map((s) => `(${s})`).join(" ")}]`);
+      const snip = ($("#peers").html() || "").replace(/\s+/g, " ").trim().slice(0, 800);
+      if (snip) notes.push(`DIAG peers-html: ${snip}`);
+    } catch { /* diagnostics are best-effort */ }
+  }
+
   return { current_pe, hist_median_pe, peer_median_pe, peers: peers.slice(0, 12), notes };
 }
 

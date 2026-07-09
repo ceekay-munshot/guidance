@@ -88,12 +88,13 @@ async function main() {
     let html = "";
     try {
       await page.goto(resolved.screener_url, { waitUntil: "domcontentloaded", timeout: 45000 });
-      // Screener lazy-loads the peers comparison table on scroll — nudge it in so Step 9's valuation
-      // context (peer-median P/E) is captured. Best-effort: never fail the fetch on this.
+      // Screener lazy-loads the peers comparison table when it scrolls into view — nudge THAT section
+      // in (not just the page bottom) and wait for the peers table specifically (waiting for any
+      // data-table resolves instantly on the P&L table and never actually waits). Best-effort.
       try {
-        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-        await page.waitForSelector("#peers table tbody tr, table.data-table tbody tr", { timeout: 8000 });
-      } catch { diagnostics.notes.push("peers table not confirmed loaded (lazy) — valuation context may be partial"); }
+        await page.evaluate(() => document.querySelector("#peers")?.scrollIntoView());
+        await page.waitForSelector("#peers table tbody tr", { timeout: 10000 });
+      } catch { diagnostics.notes.push("peers table not confirmed loaded (lazy/absent) — valuation context may be partial"); }
       html = await page.content();
     } catch (e) {
       diagnostics.notes.push(`company page load: ${e.message}`);
