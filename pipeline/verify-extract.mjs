@@ -94,8 +94,10 @@ async function main() {
   // ── summary ──
   log.step("VERIFICATION SUMMARY (internal audit — not in the client report)");
   console.log(`  checked          ${audit.checked}  (supported ${audit.tally.supported} / partial ${audit.tally.partial} / unsupported ${audit.tally.unsupported})`);
-  console.log(`  dropped          ${audit.dropped.length}`);
+  console.log(`  dropped          ${audit.dropped.length}  (guidance + expansion flags only)`);
   audit.dropped.forEach((d) => console.log(`     ✗ ${d.ref} — ${d.note.slice(0, 90)}`));
+  console.log(`  flagged (kept)   ${audit.flagged.length}  (Section B / low-confidence — logged, not pruned)`);
+  audit.flagged.forEach((f) => console.log(`     · ${f.ref} [${f.verdict}] — ${f.note.slice(0, 80)}`));
   console.log(`  provider/model   ${V.provider} / ${model}`);
 }
 

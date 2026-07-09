@@ -160,8 +160,12 @@ OPENAI_API_KEY=…  [ANTHROPIC_API_KEY=…]  node pipeline/verify-extract.mjs "N
 - Re-reads `report.json` + `transcript.txt` and asks a **second model** to judge Step 7's
   transcript-sourced claims (C.1 guidance, C.3 expansion_flags, B's transcript-derived facts)
   against the transcript, returning `supported` / `partial` / `unsupported` + confidence per claim.
-- Conservatively **drops only** claims marked `unsupported` with non-low confidence (clear
-  hallucinations); everything else is kept. **All** verdicts are logged to `verification.json`.
+- Conservatively **drops only** the transcript-only forward claims — C.1 `guidance` and C.3
+  `expansion_flags` — that are marked `unsupported` with non-low confidence (clear hallucinations).
+  Section **B** facts (`revenue_mix` / `margin_by_segment`) are transcript-first-then-PPT and can be
+  labeled estimates, so a transcript-only verifier **flags but never drops** them (they'd otherwise
+  be wrongly stripped). **All** verdicts — dropped, flagged, and supported — are logged to
+  `verification.json`.
 - `VERIFY_MODEL` is one configurable constant (defaults to a *different* OpenAI model than
   extraction). Setting **`ANTHROPIC_API_KEY`** makes the audit a true **cross-provider** check (a
   different model family judging the first model) — stronger and more independent than same-provider.

@@ -78,5 +78,16 @@ ok(audit.checked === 10 && audit.tally.unsupported === 1 && audit.tally.supporte
 ok(pruned.about.revenue_mix.length === 3 && pruned.concall.expansion_flags.length === 1, "partial/low-confidence claims are KEPT (conservative drop)");
 ok(report.concall.guidance.length === 4, "applyVerification did not mutate the input report");
 
+// ── Section B facts are FLAGGED but never DROPPED (transcript-only verifier can't refute PPT/estimates) ──
+const bOut = { verdicts: [
+  { ref: "guidance[0]", category: "guidance", claim: "g0", verdict: "unsupported", confidence: "high", note: "not in transcript" },
+  { ref: "about.revenue_mix[0]", category: "about", claim: "mix0", verdict: "unsupported", confidence: "high", note: "mix % not stated in transcript" },
+  { ref: "about.margin_by_segment[0]", category: "about", claim: "m0", verdict: "unsupported", confidence: "high", note: "segment margin not in transcript" },
+] };
+const { report: bReport, audit: bAudit } = applyVerification(report, bOut, { model: "gpt-4o", provider: "openai", transcriptAvailable: true });
+ok(bReport.concall.guidance.length === report.concall.guidance.length - 1, "guidance[0] IS dropped (transcript-only forward claim)");
+ok(bReport.about.revenue_mix.length === report.about.revenue_mix.length && bReport.about.margin_by_segment.length === report.about.margin_by_segment.length, "Section B facts are never dropped, even when unsupported/high");
+ok(bAudit.dropped.every((d) => !d.ref.startsWith("about.")) && bAudit.flagged.some((f) => f.ref === "about.revenue_mix[0]" && f.verdict === "unsupported"), "unsupported Section B facts are FLAGGED (logged), not pruned");
+
 console.log(fails === 0 ? "\nRESEARCH + VERIFY (Step 8) OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);
 process.exit(fails ? 1 : 0);
