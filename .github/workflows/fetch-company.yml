@@ -1,0 +1,59 @@
+# Munshot — fetch-company (Step 6 test harness)
+# ---------------------------------------------------------------------------
+# Owner-run: Actions → "fetch-company" → Run workflow. Fetches ONE company's real
+# snapshot + FY26 actuals + latest concall transcript/PPT and uploads the raw bundle
+# as an artifact to download and inspect. No LLM, no KV, no report writing.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   SCREENER_EMAIL, SCREENER_PASSWORD, FIRECRAWL_API_KEY, SCRAPEDO_API_KEY
+# ---------------------------------------------------------------------------
+
+name: fetch-company
+
+on:
+  workflow_dispatch:
+    inputs:
+      company:
+        description: "Company name or ticker"
+        required: true
+        default: "Navin Fluorine"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # No-save install (deps are NOT committed — see pipeline/BUNDLE.md).
+      - name: Install deps (no-save) + Chromium
+        run: |
+          npm install --no-save playwright pdfjs-dist cheerio
+          npx playwright install --with-deps chromium
+
+      - name: Fetch company
+        env:
+          SCREENER_EMAIL: ${{ secrets.SCREENER_EMAIL }}
+          SCREENER_PASSWORD: ${{ secrets.SCREENER_PASSWORD }}
+          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+          SCRAPEDO_API_KEY: ${{ secrets.SCRAPEDO_API_KEY }}
+          COMPANY: ${{ inputs.company }}
+        # Untrusted input is passed via env (COMPANY), never interpolated into the shell.
+        run: node pipeline/fetch-company.mjs "$COMPANY"
+
+      - name: Upload bundle artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: pipeline/out/**
+          if-no-files-found: warn
+          retention-days: 14

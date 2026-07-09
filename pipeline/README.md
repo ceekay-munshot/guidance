@@ -1,7 +1,12 @@
-# pipeline/ — compute engine (placeholder)
+# pipeline/ — compute engine
 
-> **Status: not built yet (step 1).** This directory is a documented placeholder.
-> The real Node pipeline lands in later steps (~step 8–11). Nothing here runs today.
+> **Status (Step 6): data fetch, PART 1 is built.** `fetch-company.mjs` fetches one
+> company's real snapshot + FY26 actuals + latest concall transcript/PPT into a raw
+> bundle — **no LLM yet** (that's Step 7). See **[BUNDLE.md](./BUNDLE.md)** to run it
+> and for the bundle shape. The LLM analysis and KV write land in later steps.
+>
+> Quick start: `node pipeline/fetch-company.mjs "Navin Fluorine"` (needs the 4 secrets),
+> or **Actions → fetch-company → Run workflow**.
 
 ## What this will be
 
