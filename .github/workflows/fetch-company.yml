@@ -1,16 +1,17 @@
-# Munshot — fetch-company (Steps 6–9 test harness)
+# Munshot — fetch-company (Steps 6–10)
 # ---------------------------------------------------------------------------
-# Owner-run: Actions → "fetch-company" → Run workflow. Chains, per its toggles:
-#   fetch (Step 6) → extract B+C (Step 7) → web risks + thesis (Step 8a)
-#   → second-model verification (Step 8b) → financial model E/F/G (Step 9a)
-#   → key_takeaways + end-to-end validation (Step 9b)
-# The last step emits the FIRST complete, schema-valid report.json. Uploads
-# pipeline/out/** (bundle + report.json + verification.json) as an artifact to
-# download and inspect. No KV, no repo dispatch, no report committed back.
+# Runs the full pipeline for ONE company. Triggered two ways:
+#   • the Worker's /api/analyze does a workflow_dispatch with { company, slug }  (Step 10, live)
+#   • the owner runs it by hand: Actions → "fetch-company" → Run workflow
+# Chain: fetch (6) → extract B+C (7) → web risks+thesis (8a) → verify (8b)
+#        → model E/F/G (9a) → key_takeaways + end-to-end validation (9b).
+# When `slug` is set, results are published to Cloudflare KV (status:<slug> / report:<slug>)
+# so the Worker can serve them; the artifact (pipeline/out/**) is uploaded either way.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   SCREENER_EMAIL, SCREENER_PASSWORD, FIRECRAWL_API_KEY, SCRAPEDO_API_KEY  (Step 6)
 #   OPENAI_API_KEY                                                    (Steps 7, 8)
+#   CF_ACCOUNT_ID, CF_KV_NAMESPACE_ID, CF_API_TOKEN                   (Step 10 — KV writes)
 # Optional repo secret (a stronger, INDEPENDENT cross-provider verification):
 #   ANTHROPIC_API_KEY  — when set, Step 8b's audit runs on a different model family
 # Optional repo variables (Settings → Variables → Actions):
@@ -27,6 +28,11 @@ on:
         description: "Company name or ticker"
         required: true
         default: "Navin Fluorine"
+        type: string
+      slug:
+        description: "KV slug (set by the Worker; leave blank for a manual run — no KV writes)"
+        required: false
+        default: ""
         type: string
       run_extract:
         description: "Run the LLM extractor (Step 7) after fetch"
@@ -57,6 +63,13 @@ on:
 permissions:
   contents: read
 
+# Collapse duplicate runs for the same company (e.g. two users clicking Analyze in the KV
+# read-then-write race window) into one — the newest supersedes an in-progress duplicate, so we
+# never burn two full pipelines on the same slug. Keyed by slug (live) or company (manual runs).
+concurrency:
+  group: fetch-company-${{ inputs.slug || inputs.company }}
+  cancel-in-progress: true
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
@@ -68,13 +81,28 @@ jobs:
         with:
           node-version: "22"
 
+      # Step 10: tell the Worker the run has started (client shows "Analyzing…"). Early so feedback
+      # is fast; never aborts the run on a KV hiccup. No-op when slug is blank (manual runs).
+      - name: KV — mark running (Step 10)
+        if: ${{ inputs.slug != '' }}
+        continue-on-error: true
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          SLUG: ${{ inputs.slug }}
+          COMPANY: ${{ inputs.company }}
+        run: node pipeline/kv-put.mjs status "$SLUG" running "Analyzing $COMPANY…"
+
       # Offline unit tests (pure JS, no deps, no network, no LLM). Fail fast if any of
-      # prompt-building / assembly / source-tagging / falsifier + verifier logic regress.
-      - name: Test pipeline (offline)
+      # prompt-building / assembly / source-tagging / falsifier + verifier / Worker logic regress.
+      - name: Test pipeline + worker (offline)
         run: |
           node pipeline/test/extract.test.mjs
           node pipeline/test/research.test.mjs
           node pipeline/test/model.test.mjs
+          node worker/test/worker.test.mjs
+          node worker/test/analyze.test.mjs
 
       # No-save install (deps are NOT committed — see pipeline/BUNDLE.md).
       - name: Install deps (no-save) + Chromium
@@ -144,6 +172,26 @@ jobs:
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           COMPANY: ${{ inputs.company }}
         run: node pipeline/finalize-report.mjs "$COMPANY"
+
+      # Step 10: on success, publish the finished report to KV and flip status → done.
+      - name: KV — publish report (Step 10)
+        if: ${{ inputs.slug != '' && success() }}
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          SLUG: ${{ inputs.slug }}
+        run: node pipeline/kv-put.mjs report "$SLUG"
+
+      # Step 10: on ANY failure above, mark the job errored so the client stops polling and shows why.
+      - name: KV — mark error (Step 10)
+        if: ${{ inputs.slug != '' && failure() }}
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          SLUG: ${{ inputs.slug }}
+        run: node pipeline/kv-put.mjs status "$SLUG" error "Couldn't complete the analysis — the company may not be resolvable on Screener, or a step errored. See the Actions log."
 
       - name: Upload bundle artifact
         if: always()

@@ -1,47 +1,34 @@
 /**
- * Munshot — Concall Deep Dive · Cloudflare Worker
+ * Munshot — Concall Deep Dive · Cloudflare Worker (STEP 10 — GO LIVE)
  * ---------------------------------------------------------------------------
- * Serves the static dashboard from the ASSETS binding and owns the /api/* routes.
+ * Serves the static dashboard from ASSETS and owns /api/*. On-demand pipeline:
+ *   client picks a company → POST /api/analyze → (if not cached/in-flight) the Worker
+ *   dispatches the GitHub Action → the Action writes the report to KV → the client
+ *   polls GET /api/report until it's done and renders it.
  *
  *   GET  /api/universe       → company universe list (public/data/universe.json)
- *   POST /api/analyze        → { ok, slug, status } — triggers a run (stubbed here)
- *   GET  /api/report?slug=…  → the finished report JSON for a company
- *   (anything else)          → falls through to env.ASSETS.fetch(request)
+ *   POST /api/analyze        → { status: "done"|"queued"|"running"|"error" }
+ *   GET  /api/report?slug=…  → { status, report? }
+ *   (anything else)          → env.ASSETS.fetch(request)
  *
- * ── STEP 1-2 (this file): STUBS ONLY. No external calls. ──
- * /api/universe reads the local fixture via the ASSETS binding. /api/analyze and
- * /api/report share an in-memory job store (below) that simulates the pipeline:
- * analyze queues a job; report 404s ("queued") until a short delay elapses, then
- * 200s the fixture ("done"). This exercises the frontend's real poll loop today.
- *
- * ── STEP 10 will make these real. The contract it will use: ──
- * Secrets (set via `wrangler secret put <NAME>`, never committed):
- *   GITHUB_TOKEN   fine-grained PAT with `actions:write` on the repo below.
- *   GITHUB_REPO    "owner/repo" that hosts .github/workflows/analyze.yml.
- *   GITHUB_BRANCH  git ref to dispatch against, e.g. "main".
  * Bindings (wrangler.jsonc):
- *   ASSETS         static-asset fetcher for ./public (already wired).
- *   REPORTS        KV namespace holding finished reports, keyed by slug.
- *
- * Real /api/analyze (step 10):
- *   1. Look up KV `REPORTS.get(slug)`. If present and fresh → return status:"done".
- *   2. Else POST to the GitHub REST API to dispatch the workflow:
- *        POST https://api.github.com/repos/${GITHUB_REPO}/actions/workflows/analyze.yml/dispatches
- *        Authorization: Bearer ${GITHUB_TOKEN}
- *        body: { ref: GITHUB_BRANCH, inputs: { slug, company, ticker } }
- *      and return status:"queued". The frontend keeps polling /api/report.
- * Real /api/report (step 10):
- *   Return `REPORTS.get(slug, { type: "json" })`; 404 until the Action writes it.
- *
- * How the Action authenticates to KV (step 10, runs in GitHub Actions):
- *   The pipeline writes the report to KV using the Cloudflare API with repo
- *   secrets CF_ACCOUNT_ID + CF_API_TOKEN (token scoped to "Workers KV Storage:Edit"),
- *   PUT-ing to /accounts/{account}/storage/kv/namespaces/{REPORTS_ID}/values/{slug}.
- *   The Worker never writes KV; it only reads.
+ *   ASSETS   static-asset fetcher for ./public.
+ *   REPORTS  KV namespace. Keys: report:<slug> (finished report JSON, has meta.generated_at),
+ *            status:<slug> ({ state, updated_at, message }). The Action writes both via the
+ *            Cloudflare KV REST API; the Worker READS them and writes only status:<slug>="queued".
+ * Vars (wrangler.jsonc): GITHUB_REPO ("owner/repo"), GITHUB_BRANCH ("main").
+ * Secret (wrangler secret put): GITHUB_TOKEN — fine-grained PAT with Actions read/write.
+ *   The token is used ONLY server-side for workflow_dispatch and is never returned in a response.
  * ---------------------------------------------------------------------------
  */
 
-// Permissive CORS — this is a public read API; tighten the origin in step 10 if needed.
+const WORKFLOW_FILE = "fetch-company.yml"; // the Action to dispatch (must accept `company` + `slug`)
+const FRESH_DAYS = 14;                      // a report newer than this is served from cache, not re-run
+const STALE_STATUS_MS = 25 * 60 * 1000;     // MUST exceed the workflow's timeout-minutes (20) so a legitimately
+                                            // long run is never marked stale mid-flight (which would let a retry
+                                            // re-dispatch and cancel-in-progress kill the near-done original). A
+                                            // status older than this is presumed stuck (crash/missed error step).
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -49,20 +36,25 @@ const CORS_HEADERS = {
   "Access-Control-Max-Age": "86400",
 };
 
-/** JSON response with CORS + no-store (fixtures may change between deploys). */
+/** JSON response with CORS + no-store. */
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data, null, 2), {
     status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-      ...CORS_HEADERS,
-      ...extraHeaders,
-    },
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...CORS_HEADERS, ...extraHeaders },
   });
 }
 
-/** Read a static asset (by absolute path) through the ASSETS binding and parse it as JSON. */
+/** URL-safe slug — identical to public/js/analyze.js and pipeline/lib/util.mjs. */
+function slugify(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64) || "company";
+}
+
+/** Read a static asset (absolute path) through ASSETS and parse as JSON. */
 async function readAssetJson(env, request, path) {
   const url = new URL(request.url);
   url.pathname = path;
@@ -72,92 +64,158 @@ async function readAssetJson(env, request, path) {
   return res.json();
 }
 
-/**
- * In-memory job store — a stand-in for the REPORTS KV until step 10.
- * Keyed by slug → { status: "queued" | "done", startedAt }. Module-level, so it
- * lives for the life of the isolate — fine for local `wrangler dev` and this stub;
- * a real deploy uses durable KV (step 10 wires it in). Never persisted, no external calls.
- */
-const jobs = new Map();
-
-// Simulated pipeline latency so the frontend poll loop exercises the 404→200 path.
-const SIMULATED_DELAY_MS = 4000;
-
-/** GET /api/universe — the company universe for the search box. */
-async function handleUniverse(env, request) {
-  const universe = await readAssetJson(env, request, "/data/universe.json");
-  return json(universe);
+/** Read a KV JSON value, or null if absent/unparseable. */
+async function kvJson(env, key) {
+  if (!env.REPORTS) return null;
+  try { return await env.REPORTS.get(key, { type: "json" }); } catch { return null; }
 }
 
 /**
- * POST /api/analyze { slug } — STUB with a real job lifecycle.
- * If the job is already "done", report it done. Otherwise (re)queue it, stamping a
- * start time so /api/report can simulate the pipeline delay. Step 10 replaces this
- * with a KV check + a GitHub workflow_dispatch.
+ * The canonical KV slug for a company. If the input exactly matches a universe entry's name OR
+ * ticker, use that entry's curated slug — so aliases of the same company (e.g. "TCS" vs
+ * "Tata Consultancy Services Ltd") share ONE cache key instead of dispatching duplicate runs.
+ * Free-text companies not in the universe fall back to slugify(company). Always derived server-side.
  */
-async function handleAnalyze(env, request, url) {
-  let slug = url.searchParams.get("slug") || "";
-  if (!slug) {
-    try {
-      const body = await request.json();
-      slug = (body && body.slug) || "";
-    } catch {
-      /* no/invalid body — fall through to the guard below */
+async function canonicalSlug(env, request, company) {
+  const q = company.trim().toLowerCase();
+  try {
+    const universe = await readAssetJson(env, request, "/data/universe.json");
+    if (Array.isArray(universe)) {
+      const hit = universe.find((c) => (c.name || "").toLowerCase() === q || (c.ticker || "").toLowerCase() === q);
+      if (hit && hit.slug) return slugify(hit.slug);
     }
-  }
-  if (!slug) return json({ ok: false, status: "error", error: "missing slug" }, 400);
+  } catch { /* universe unavailable → fall back to the plain slug */ }
+  return slugify(company);
+}
 
-  const existing = jobs.get(slug);
-  if (existing && existing.status === "done") {
-    return json({ ok: true, slug, status: "done" });
+/** Is a stored report newer than FRESH_DAYS? */
+function isFresh(report) {
+  const g = report && report.meta && report.meta.generated_at;
+  const t = g ? Date.parse(g) : NaN;
+  return Number.isFinite(t) && Date.now() - t < FRESH_DAYS * 86400000;
+}
+
+/** A job the pipeline is (claims to be) actively working on. */
+function isInFlight(status) {
+  return !!status && (status.state === "queued" || status.state === "running");
+}
+
+/** An in-flight status is "stuck" if it hasn't been touched within STALE_STATUS_MS (or has no
+ *  timestamp we can trust). Stuck statuses stop blocking a fresh dispatch / poll. */
+function isStatusStale(status) {
+  const t = status && status.updated_at ? Date.parse(status.updated_at) : NaN;
+  return !Number.isFinite(t) || Date.now() - t > STALE_STATUS_MS;
+}
+
+/**
+ * Dispatch the GitHub Action via workflow_dispatch. Returns nothing on success (HTTP 204);
+ * throws a SANITIZED error on failure. The GITHUB_TOKEN lives only in the request header and is
+ * never included in the thrown message or any response.
+ */
+async function dispatchWorkflow(env, inputs) {
+  const url = `https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "munshot-concall-worker",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ref: env.GITHUB_BRANCH || "main", inputs }),
+  });
+  if (res.status !== 204) {
+    // GitHub echoes the request body (never the auth header), so a short snippet is token-safe.
+    const detail = (await res.text().catch(() => "")).slice(0, 200);
+    throw new Error(`dispatch HTTP ${res.status}${detail ? ` — ${detail}` : ""}`);
   }
-  jobs.set(slug, { status: "queued", startedAt: Date.now() });
+}
+
+// ── GET /api/universe ─────────────────────────────────────────────────────────
+async function handleUniverse(env, request) {
+  return json(await readAssetJson(env, request, "/data/universe.json"));
+}
+
+/**
+ * POST /api/analyze { company, ticker?, force? }
+ *   fresh report (and not forced) → { status: "done" } (client GETs it).
+ *   a job already in flight        → return that state (no duplicate dispatch), unless it's stale/forced.
+ *   else                           → status:<slug>=queued, dispatch the Action, return "queued".
+ *
+ * The KV key (slug) is derived SERVER-SIDE from the company — a caller cannot supply a slug that
+ * points at another company's cache (that would let one company's report poison another's key).
+ */
+async function handleAnalyze(env, request) {
+  let body = {};
+  try { body = (await request.json()) || {}; } catch { /* empty/invalid body */ }
+  const company = String(body.company || body.ticker || "").trim();
+  if (!company) return json({ ok: false, status: "error", error: "missing company" }, 400);
+  const slug = await canonicalSlug(env, request, company); // server-side; NOT body.slug
+  if (!slug || slug === "company") return json({ ok: false, status: "error", error: "missing company" }, 400);
+  const force = body.force === true;
+
+  const [report, status] = await Promise.all([kvJson(env, `report:${slug}`), kvJson(env, `status:${slug}`)]);
+  const reportT = report && report.meta && report.meta.generated_at ? Date.parse(report.meta.generated_at) : -Infinity;
+  const statusT = status && status.updated_at ? Date.parse(status.updated_at) : -Infinity;
+  const inFlightFresh = isInFlight(status) && !isStatusStale(status);
+  const newerError = status && status.state === "error" && statusT > reportT; // a failed refresh after the cached report
+
+  // Serve the fresh cache ONLY if nothing newer is pending — otherwise a failed/in-flight refresh
+  // would be masked by the stale report and "Try again" could never start a replacement.
+  if (report && isFresh(report) && !force && !newerError && !inFlightFresh) return json({ ok: true, slug, status: "done" });
+  // A live run blocks a duplicate dispatch — but a stuck (stale) status, or an explicit force, re-runs.
+  if (inFlightFresh && !force) return json({ ok: true, slug, status: status.state, message: status.message });
+
+  if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) {
+    return json({ ok: false, status: "error", error: "analysis is not configured on the server" }, 503);
+  }
+  if (env.REPORTS) await env.REPORTS.put(`status:${slug}`, JSON.stringify({ state: "queued", updated_at: new Date().toISOString(), message: "Dispatching run…" }));
+  try {
+    await dispatchWorkflow(env, { company, slug });
+  } catch (err) {
+    if (env.REPORTS) await env.REPORTS.put(`status:${slug}`, JSON.stringify({ state: "error", updated_at: new Date().toISOString(), message: "Could not start the analysis run." }));
+    return json({ ok: false, slug, status: "error", error: "could not start analysis", detail: String(err && err.message || err) }, 502);
+  }
   return json({ ok: true, slug, status: "queued" });
 }
 
 /**
- * GET /api/report?slug=… — STUB with a genuine 404-until-ready lifecycle:
- *   • no job for slug            → 404 { status: "unknown" }
- *   • queued & within the delay  → 404 { status: "queued" }
- *   • queued & delay elapsed     → flips to "done"
- *   • done                       → 200 with the fixture verbatim (always the Navin sample)
- * The 200 body is the pure report artifact (has `meta`) — that IS the "done" signal
- * downstream consumes. Step 10 replaces this with REPORTS.get(slug) from KV.
+ * GET /api/report?slug=… → { status, report? }.
+ * A FRESH in-flight run wins over any stored report, so a refresh/regenerate keeps the client polling
+ * for the NEW result instead of instantly re-rendering the old one. Once the run finishes (status no
+ * longer in-flight), the report wins. A stuck (stale) in-flight status falls through to serving
+ * whatever report we have rather than polling forever. Read-only: the slug param never writes KV.
  */
 async function handleReport(env, request, url) {
-  const slug = url.searchParams.get("slug");
-  if (!slug) return json({ ok: false, status: "error", error: "missing slug" }, 400);
+  const slug = slugify(url.searchParams.get("slug") || "");
+  if (!slug || slug === "company") return json({ ok: false, status: "error", error: "missing slug" }, 400);
 
-  const job = jobs.get(slug);
-  if (!job) return json({ ok: false, slug, status: "unknown" }, 404);
+  const [report, status] = await Promise.all([kvJson(env, `report:${slug}`), kvJson(env, `status:${slug}`)]);
+  if (isInFlight(status) && !isStatusStale(status)) return json({ ok: true, slug, status: status.state, message: status.message });
 
-  if (job.status === "queued") {
-    if (Date.now() - job.startedAt < SIMULATED_DELAY_MS) {
-      return json({ ok: false, slug, status: "queued" }, 404);
-    }
-    job.status = "done"; // delay elapsed → ready
+  const reportT = report && report.meta && report.meta.generated_at ? Date.parse(report.meta.generated_at) : -Infinity;
+  const statusT = status && status.updated_at ? Date.parse(status.updated_at) : -Infinity;
+  // A failure from a run AFTER the stored report was generated wins — don't hide a failed refresh.
+  if (status && status.state === "error" && statusT > reportT) return json({ ok: false, slug, status: "error", error: status.message || "Analysis failed." });
+  // A done status carries the report's generated_at. Accept the report as the completed run ONLY once
+  // that report has actually propagated (Workers KV is eventually consistent — the new report can lag
+  // its own done status). Until then keep the client polling rather than render an older cached report.
+  const doneAt = status && status.state === "done" && status.generated_at ? Date.parse(status.generated_at) : NaN;
+  if (Number.isFinite(doneAt)) {
+    if (report && reportT >= doneAt) return json({ ok: true, slug, status: "done", report });
+    return json({ ok: true, slug, status: "running", message: "Finishing up…" });
   }
-
-  // Done → serve the fixture verbatim. It stays the Navin Fluorine sample for ANY
-  // slug (there is only one fixture). We deliberately do NOT rewrite meta to the
-  // requested company: that produced a self-contradictory report (e.g. TCS metadata
-  // over Navin's numbers). Step 10 returns a real, per-company report from KV.
-  const report = await readAssetJson(env, request, "/data/sample-report.json");
-  return json(report);
+  if (report) return json({ ok: true, slug, status: "done", report }); // report with no done-status to gate on
+  if (status && status.state === "error") return json({ ok: false, slug, status: "error", error: status.message || "Analysis failed." });
+  return json({ ok: false, slug, status: "unknown" });
 }
 
 async function handleApi(env, request, url) {
-  const path = url.pathname;
   try {
-    if (path === "/api/universe" && request.method === "GET") {
-      return await handleUniverse(env, request);
-    }
-    if (path === "/api/analyze" && request.method === "POST") {
-      return await handleAnalyze(env, request, url);
-    }
-    if (path === "/api/report" && request.method === "GET") {
-      return await handleReport(env, request, url);
-    }
+    if (url.pathname === "/api/universe" && request.method === "GET") return await handleUniverse(env, request);
+    if (url.pathname === "/api/analyze" && request.method === "POST") return await handleAnalyze(env, request);
+    if (url.pathname === "/api/report" && request.method === "GET") return await handleReport(env, request, url);
     return json({ ok: false, error: "not found" }, 404);
   } catch (err) {
     return json({ ok: false, error: String(err && err.message || err) }, 500);
@@ -167,16 +225,11 @@ async function handleApi(env, request, url) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-
-    if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: CORS_HEADERS });
-    }
-
-    if (url.pathname.startsWith("/api/")) {
-      return handleApi(env, request, url);
-    }
-
-    // Everything else → static assets (index.html, js, css, data, …)
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
+    if (url.pathname.startsWith("/api/")) return handleApi(env, request, url);
     return env.ASSETS.fetch(request);
   },
 };
+
+// Exported for offline unit tests (worker/test/worker.test.mjs). Not used by the runtime.
+export const __test = { slugify, isFresh, isInFlight, isStatusStale, FRESH_DAYS, STALE_STATUS_MS };

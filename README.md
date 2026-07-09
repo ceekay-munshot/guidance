@@ -71,46 +71,69 @@ run); `GET /api/report?slug=…` returns 404 (`{status:"queued"}`) until a short
 delay elapses, then 200 with the sample report — so the real request→poll loop runs
 end-to-end today. (The in-memory store is a stand-in for the `REPORTS` KV until step 10.)
 
+## How a live analysis flows (Step 10)
+
+```
+client picks a company → POST /api/analyze
+      → Worker: fresh report in KV?  → yes: return done (client GETs it)
+                job already running?  → yes: return its status (no duplicate)
+                else: status:<slug>=queued + workflow_dispatch(fetch-company.yml, {company, slug})
+      → Action: status:<slug>=running → fetch→extract→research→verify→model→finalize
+                → on success: report:<slug>=report.json + status:<slug>=done
+                → on failure: status:<slug>=error
+      → client polls GET /api/report?slug=… → renders the report on done
+```
+
+KV is the source of truth (reports are **not** committed back to the repo). A report is served
+from cache while newer than `FRESH_DAYS` (14); the report card has a **Regenerate** button that
+re-runs past the cache.
+
 ## Deployment
 
-Cloudflare Workers. Deploy is `npx wrangler deploy` (wire a push-to-`main` deploy in
-CI when ready). The static site ships from `./public` via the `ASSETS` binding.
+Cloudflare Workers, deployed on push to `main` (Git integration). The static site ships from
+`./public` via the `ASSETS` binding; `worker/index.js` owns `/api/*`.
 
-## Secrets & bindings the owner must add
+## Secrets & bindings the owner must add (GO LIVE)
 
-None are needed for step 1 (everything is stubbed). Before the real pipeline is wired
-(~step 10), add:
+### Cloudflare Worker
 
-### Cloudflare Worker — `wrangler secret put <NAME>` (never commit these)
-
-| Name | Purpose |
-| --- | --- |
-| `GITHUB_TOKEN` | fine-grained PAT with `actions:write` — Worker dispatches the analyze workflow |
-| `GITHUB_REPO` | `owner/repo` hosting `.github/workflows/analyze.yml` |
-| `GITHUB_BRANCH` | git ref to dispatch against (e.g. `main`) |
-
-### Cloudflare Worker — binding in `wrangler.jsonc`
-
-| Binding | Purpose |
-| --- | --- |
-| `ASSETS` | static-asset fetcher for `./public` (already wired) |
-| `REPORTS` | KV namespace holding finished reports, keyed by slug (add in step 10) |
+- **Binding + vars — already in `wrangler.jsonc`:** `ASSETS`; the `REPORTS` KV namespace
+  (`id` = your Namespace ID, not secret); vars `GITHUB_REPO` / `GITHUB_BRANCH`.
+- **Secret — `wrangler secret put GITHUB_TOKEN`** (never committed): a fine-grained PAT scoped to
+  this repo with **Actions: Read & write**. The Worker uses it only to dispatch the workflow.
 
 ### GitHub Action — repo secrets (Settings → Secrets → Actions)
 
 | Name | Purpose |
 | --- | --- |
-| `OPENAI_API_KEY` (+ other LLM keys, e.g. `ANTHROPIC_API_KEY`) | analysis LLM calls |
-| `FIRECRAWL_API_KEY` | fetch transcripts / investor decks / web |
+| `OPENAI_API_KEY` (+ optional `ANTHROPIC_API_KEY`) | analysis LLM calls |
+| `SCREENER_EMAIL`, `SCREENER_PASSWORD` | Screener login |
+| `FIRECRAWL_API_KEY`, `SCRAPEDO_API_KEY` | fetch transcripts / decks / web |
 | `CF_ACCOUNT_ID` | Cloudflare account id |
-| `CF_API_TOKEN` | token scoped to **Workers KV Storage: Edit** — Action writes KV |
-| `CF_KV_NAMESPACE_ID` | the `REPORTS` KV namespace id |
+| `CF_API_TOKEN` | token scoped to **Workers KV Storage: Edit** — the Action writes KV |
+| `CF_KV_NAMESPACE_ID` | the `REPORTS` KV Namespace ID (same value as in `wrangler.jsonc`) |
+
+## GO-LIVE test checklist
+
+1. **Push `main`** → the Worker deploys (Cloudflare Git integration).
+2. **Set the values above:** the 3 Cloudflare Action secrets, the Worker `GITHUB_TOKEN`, and the
+   KV Namespace ID in `wrangler.jsonc` (already set to the owner's namespace).
+3. **Open the site**, pick a company (or type any name/ticker), hit **Analyze**.
+4. Watch the run fire in the repo's **Actions** tab; the page shows *Analyzing… (Ns)* while it polls.
+5. When the Action finishes (~1–2 min), the **real report renders** (editable model + live valuation).
+   A company that can't be resolved on Screener surfaces a clean error with **Try again**.
+
+### Cost / abuse guardrail (optional, not wired)
+
+Each run costs LLM + compute. `/api/analyze` is currently open. To gate it later, add a light
+passcode or per-IP rate-limit in `handleAnalyze` (mirror the sibling repo's `ADD_FUND_PASSCODE`
+pattern) — the handler is the single choke point, so it's a clean hook.
 
 ## Notes
 
-- Sample data is for building the UI — **not investment advice.**
-- The frontend stays build-tooling-free (CDN only), matching the sibling repo. Node deps
-  for the pipeline come later as no-save installs.
+- Reports are research **observations, not investment advice** — Munshot is not a SEBI-registered
+  adviser.
+- The frontend stays build-tooling-free (CDN only). Pipeline Node deps are no-save installs in CI.
 
 ---
 

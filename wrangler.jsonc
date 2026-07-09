@@ -10,18 +10,24 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS"
+  },
+
+  // KV namespace the GitHub Action writes finished reports into and the Worker reads on
+  // GET /api/report?slug=… . `id` is the Namespace ID — NOT secret. (Owner: replace only if you
+  // recreate the namespace.)
+  "kv_namespaces": [
+    { "binding": "REPORTS", "id": "4f7a410ab8eb4890b6c34f374c4c4e5e" }
+  ],
+
+  // Plain (non-secret) vars — which repo/branch the Worker dispatches the Action against.
+  "vars": {
+    "GITHUB_REPO": "ceekay-munshot/guidance",
+    "GITHUB_BRANCH": "main"
   }
 
-  // ── Bindings step 10 will add (documented here so the contract is visible) ──
-  // KV namespace that the GitHub Action writes finished report JSON into and the
-  // Worker reads on GET /api/report?slug=… :
-  //
-  // "kv_namespaces": [
-  //   { "binding": "REPORTS", "id": "<production-kv-id>", "preview_id": "<preview-kv-id>" }
-  // ]
-  //
-  // Secrets are NOT set here — add them with `wrangler secret put <NAME>`:
-  //   GITHUB_TOKEN   — fine-grained PAT with `actions:write` to dispatch the workflow
-  //   GITHUB_REPO    — "owner/repo" the analyze workflow lives in
-  //   GITHUB_BRANCH  — ref to dispatch against (e.g. "main")
+  // ── Secrets are NOT set here (never commit them) ──
+  // Worker secret (set once):  wrangler secret put GITHUB_TOKEN
+  //   → a fine-grained PAT scoped to this repo with Actions: read & write (dispatches the workflow).
+  // GitHub Actions secrets (Settings → Secrets → Actions) so the Action can write KV:
+  //   CF_ACCOUNT_ID, CF_KV_NAMESPACE_ID (= the id above), CF_API_TOKEN (Workers KV Storage: Edit).
 }
