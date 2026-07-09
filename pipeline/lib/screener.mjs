@@ -137,35 +137,67 @@ export function parseValuationContext($, ratios) {
   const current_pe = ratios?.["stock pe"] ?? ratios?.["price to earning"] ?? ratios?.["pe"] ?? null;
   if (current_pe == null) notes.push("current P/E not in top-ratios");
   // Historical median P/E — occasionally surfaced as a top-ratio; usually chart-only (then null).
-  const hist_median_pe = ratios?.["median pe"] ?? ratios?.["pe median"] ?? null;
+  // Scan every top-ratio key for one mentioning both "median" and "pe" before giving up.
+  let hist_median_pe = ratios?.["median pe"] ?? ratios?.["pe median"] ?? null;
+  if (hist_median_pe == null && ratios) {
+    const k = Object.keys(ratios).find((key) => /median/.test(key) && /\bpe\b/.test(key));
+    if (k) hist_median_pe = ratios[k];
+  }
   if (hist_median_pe == null) notes.push("historical median P/E not in page HTML (chart-only) — left null");
 
-  // Peer comparison table (Documents → Peers). Find the P/E column + the "Median" row.
+  // Peer comparison table. Find it by the explicit #peers section, else by signature (a data-table
+  // with a P/E column AND a "Median" row), which survives Screener markup shifts / lazy loading.
   const peers = [];
   let peer_median_pe = null;
   try {
-    const $t = $("#peers table").first().length ? $("#peers table").first() : $("section#peers table").first();
+    const $t = findPeersTable($);
     if ($t && $t.length) {
-      const headers = [];
-      $t.find("thead th").each((_, th) => headers.push($(th).text().replace(/\s+/g, " ").trim()));
-      const peCol = headers.findIndex((h) => /^p\s*\/?\s*e$|^pe$/i.test(h.replace(/\s+/g, "")));
+      const headers = $t.find("thead th").map((_, th) => $(th).text().replace(/\s+/g, " ").trim()).get();
+      const peCol = peColumnIndex(headers);
+      // The name column is "Name" if present, else the first column (the "S.No." column, when it
+      // exists, pushes both the company names AND the "Median …" label into column 1).
+      const nameCol = Math.max(0, headers.findIndex((h) => /name/i.test(h)));
+      if (peCol < 0) notes.push("peer table found but no P/E column");
       $t.find("tbody tr").each((_, tr) => {
         const cells = $(tr).find("td").map((_, td) => $(td).text().replace(/\s+/g, " ").trim()).get();
-        const label = (cells[0] || "").toLowerCase();
+        const label = (cells[nameCol] || "").toLowerCase();
         const pe = peCol >= 0 ? parseNum(cells[peCol]) : null;
         if (/median/.test(label)) peer_median_pe = pe;
-        else if (cells[0] && pe != null) peers.push({ name: cells[0], pe });
+        else if (label && pe != null) peers.push({ name: cells[nameCol], pe });
       });
+      // Fall back to computing the median from the peer rows if Screener didn't render a Median row.
       if (peer_median_pe == null && peers.length) {
         const vals = peers.map((p) => p.pe).filter((n) => typeof n === "number").sort((a, b) => a - b);
         if (vals.length) { const mid = Math.floor(vals.length / 2); peer_median_pe = vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2; }
       }
-    } else notes.push("no #peers comparison table on the page");
+    } else notes.push("no peer comparison table on the page (may be lazy-loaded and not captured)");
   } catch (e) {
     notes.push(`peer table parse failed: ${e.message}`);
   }
 
   return { current_pe, hist_median_pe, peer_median_pe, peers: peers.slice(0, 12), notes };
+}
+
+/** Index of a table's P/E column (matches "P/E", "PE", "P/E TTM"), not P/B or PEG. */
+function peColumnIndex(headers) {
+  return headers.findIndex((h) => /^p\s*\/?\s*e(\s*ttm)?$/i.test(String(h).replace(/\s+/g, " ").trim()) || /^pe$/i.test(String(h).replace(/\s+/g, "")));
+}
+
+/** Locate Screener's peer-comparison table: the explicit #peers section, else the first data-table
+ *  whose header has a P/E column AND whose body has a "Median" row (the peer-table signature). */
+function findPeersTable($) {
+  const explicit = $("#peers table, section#peers table, [id*='peers'] table").filter((_, t) => $(t).find("thead th").length).first();
+  if (explicit && explicit.length) return explicit;
+  let found = null;
+  $("table.data-table").each((_, t) => {
+    if (found) return;
+    const $t = $(t);
+    const headers = $t.find("thead th").map((_, th) => $(th).text().trim()).get();
+    // "Median" may sit in any column (an S.No. column shifts it) — match the whole row text.
+    const hasMedian = $t.find("tbody tr").filter((_, tr) => /median/i.test($(tr).text())).length > 0;
+    if (peColumnIndex(headers) >= 0 && hasMedian) found = $t;
+  });
+  return found;
 }
 
 /** Parse the Documents → Concalls list. Returns { entries: [{date, iso, transcript, ppt, title}] } newest-first. */

@@ -99,17 +99,25 @@ export function applyVerification(report, verifierOut, { model, provider, transc
       return true;
     });
 
+  // DROP only the transcript-only forward claims — C.1 guidance (source=Transcript) and C.3
+  // expansion_flags (Section C is transcript-only). Section B facts (revenue_mix / margin_by_segment)
+  // are transcript-FIRST-then-PPT and may be openly-labeled estimates; a transcript-only verifier
+  // cannot fairly refute a PPT-sourced or estimated fact, so those are FLAGGED (verdict logged) but
+  // NEVER dropped — otherwise the audit would systematically strip legitimate About content.
   c.guidance = prune(c.guidance, (i) => `guidance[${i}]`, "guidance");
   if (transcriptAvailable) {
     c.expansion_flags = prune(c.expansion_flags, (i) => `expansion_flags[${i}]`, "expansion_flag");
-    a.revenue_mix = prune(a.revenue_mix, (i) => `about.revenue_mix[${i}]`, "about");
-    a.margin_by_segment = prune(a.margin_by_segment, (i) => `about.margin_by_segment[${i}]`, "about");
   }
 
   const tally = { supported: 0, partial: 0, unsupported: 0 };
   verdicts.forEach((v) => { if (tally[v.verdict] != null) tally[v.verdict]++; });
 
   const droppedRefs = new Set(dropped.map((d) => d.ref));
+  // Facts the verifier doubted but which were KEPT (Section B, or low-confidence) — surfaced for
+  // transparency without being pruned.
+  const flagged = verdicts
+    .filter((v) => v.verdict !== "supported" && !droppedRefs.has(v.ref))
+    .map((v) => ({ ref: v.ref, category: v.category, verdict: v.verdict, confidence: v.confidence, note: v.note }));
   const audit = {
     slug: out.meta?.slug || null,
     company: out.meta?.company || null,
@@ -121,6 +129,7 @@ export function applyVerification(report, verifierOut, { model, provider, transc
     checked: verdicts.length,
     tally,
     dropped,
+    flagged,
     verdicts: verdicts.map((v) => ({ ...v, dropped: droppedRefs.has(v.ref) })),
   };
 
