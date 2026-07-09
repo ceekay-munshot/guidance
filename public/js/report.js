@@ -588,35 +588,43 @@ function artifactValues(report) {
   };
 }
 
-const GROWTH_LEVERS = ["growth_fy27", "growth_fy28"];
-const EBITDA_LEVERS = ["ebitda_margin_fy27", "ebitda_margin_fy28"];
-const NETM_LEVERS = ["net_margin_fy27", "net_margin_fy28"];
-
 /**
- * The values to DISPLAY for the given edit state. GRANULAR — each row only recomputes from the
- * levers that actually drive it, so an edit to one assumption never disturbs the others:
- *   • nothing edited       → the validated artifact (exact; reconciles with report.valuation).
- *   • revenue growth        → revenue recomputes; EBITDA/PAT follow (they scale with revenue).
- *   • a margin only         → revenue stays the artifact; only EBITDA (or PAT) re-derives.
- *   • CMP only              → earnings stay the artifact; only market cap / EV / multiples move.
- * Valuation always re-values off the current CMP and the current earnings basis.
+ * The values to DISPLAY for the given edit state. GRANULAR PER-YEAR, PER-CELL — each cell only
+ * recomputes when ITS OWN inputs changed, so editing one assumption never disturbs an untouched
+ * year or line:
+ *   • nothing edited   → the validated artifact (exact; reconciles with report.valuation).
+ *   • growth_fyN       → revenue.fyN recomputes (FY28 also depends on FY27 growth, as it compounds).
+ *   • margin_fyN       → only that year's EBITDA/PAT re-derive, off the DISPLAYED revenue (artifact
+ *                        when growth is untouched — so no rounding drift leaks into other years).
+ *   • CMP              → only market cap / EV / multiples move.
  */
 export function displayModel(report, current, seed) {
-  const diff = (keys) => keys.some((k) => current[k] !== seed[k]);
-  const growthEdited = diff(GROWTH_LEVERS), ebEdited = diff(EBITDA_LEVERS), nmEdited = diff(NETM_LEVERS);
-  const cmpEdited = current.cmp !== seed.cmp;
-  if (!growthEdited && !ebEdited && !nmEdited && !cmpEdited) return artifactValues(report);
+  const chg = (k) => current[k] !== seed[k];
+  const g27 = chg("growth_fy27"), g28 = chg("growth_fy28");
+  const em27 = chg("ebitda_margin_fy27"), em28 = chg("ebitda_margin_fy28");
+  const nm27 = chg("net_margin_fy27"), nm28 = chg("net_margin_fy28");
+  if (!g27 && !g28 && !em27 && !em28 && !nm27 && !nm28 && !chg("cmp")) return artifactValues(report);
 
   const art = artifactValues(report);
-  // Revenue: recompute only when a growth lever changed; otherwise preserve the artifact rows.
-  const revenue = growthEdited ? computeModel(report, current).revenue : art.revenue;
+  const comp = computeModel(report, current);
+  // FY28 revenue compounds off FY27, so it moves if either growth lever changed.
+  const rev27changed = g27, rev28changed = g27 || g28;
+  const revenue = {
+    fy27e: rev27changed ? comp.revenue.fy27e : art.revenue.fy27e,
+    fy28e: rev28changed ? comp.revenue.fy28e : art.revenue.fy28e,
+  };
   const em = { fy27e: asNum(current.ebitda_margin_fy27, 0), fy28e: asNum(current.ebitda_margin_fy28, 0) };
   const nm = { fy27e: asNum(current.net_margin_fy27, 0), fy28e: asNum(current.net_margin_fy28, 0) };
-  // EBITDA/PAT: re-derive from revenue × margin when their revenue or margin changed; else artifact.
-  const ebitda = growthEdited || ebEdited ? { fy27e: (revenue.fy27e * em.fy27e) / 100, fy28e: (revenue.fy28e * em.fy28e) / 100 } : art.ebitda;
-  const pat = growthEdited || nmEdited ? { fy27e: (revenue.fy27e * nm.fy27e) / 100, fy28e: (revenue.fy28e * nm.fy28e) / 100 } : art.pat;
-  const ebitda_margin_pct = growthEdited || ebEdited ? em : art.ebitda_margin_pct;
-  const net_margin_pct = growthEdited || nmEdited ? nm : art.net_margin_pct;
+  // EBITDA/PAT for a year re-derive (off that year's DISPLAYED revenue) only if its revenue or its
+  // own margin changed; otherwise the reported row is preserved exactly.
+  const ebitda = {
+    fy27e: rev27changed || em27 ? (revenue.fy27e * em.fy27e) / 100 : art.ebitda.fy27e,
+    fy28e: rev28changed || em28 ? (revenue.fy28e * em.fy28e) / 100 : art.ebitda.fy28e,
+  };
+  const pat = {
+    fy27e: rev27changed || nm27 ? (revenue.fy27e * nm.fy27e) / 100 : art.pat.fy27e,
+    fy28e: rev28changed || nm28 ? (revenue.fy28e * nm.fy28e) / 100 : art.pat.fy28e,
+  };
 
   const inputs = report.meta?.inputs ?? {};
   const shares = asNum(inputs.shares_out_cr, 0), netDebt = asNum(inputs.net_debt_cr, 0);
@@ -624,7 +632,9 @@ export function displayModel(report, current, seed) {
   const marketCap = cmp * shares, ev = marketCap + netDebt;
   const ratio = (n, d) => (typeof d === "number" && d > 0 ? n / d : null);
   return {
-    revenue, ebitda, ebitda_margin_pct, pat, net_margin_pct,
+    revenue, ebitda, pat,
+    ebitda_margin_pct: { fy27e: em.fy27e, fy28e: em.fy28e },
+    net_margin_pct: { fy27e: nm.fy27e, fy28e: nm.fy28e },
     valuation: {
       marketCap, ev,
       pe: { fy27e: ratio(marketCap, pat.fy27e), fy28e: ratio(marketCap, pat.fy28e) },
