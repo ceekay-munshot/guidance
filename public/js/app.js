@@ -1,20 +1,20 @@
-// app.js — Munshot · Concall Deep Dive (STEP 2)
-// Landing shell: universe load, a production-grade type-ahead search, and a clean
-// idle → queued → polling → loaded/error run-state machine against the (stubbed)
-// Worker. The report RENDERER is step 3 — the done state shows a placeholder card
-// and logs the report object; it does NOT render the full report yet.
+// app.js — Munshot · Concall Deep Dive (STEP 10 — GO LIVE)
+// Landing shell: universe load, a production-grade type-ahead search (with free-text),
+// and a real idle → queued → polling → loaded/error run-state machine that dispatches the
+// GitHub Action via the Worker and renders the REAL per-company report from KV. On first
+// load it shows the sample report as a demo; a live run replaces it.
 
 import { qs, qsa, sleep, debounce, escapeHtml, highlightMatch, renderIcons, show, clamp } from "./ui.js";
 import { renderReport, hydrateModel } from "./report.js";
+import { resolveTarget, pollDecision } from "./analyze.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 const MAX_RESULTS = 8;        // cap the visible suggestion list
 const POPULAR_COUNT = 6;      // "Popular" rows shown on empty-query focus
-const POLL_INTERVAL_MS = 1200;
-// Give up (→ timeout error) after ~60s. Fine for step 2's ~4s stub. Step 10's real
-// workflow_dispatch path (fetch + LLM) can exceed a minute — raise this materially
-// and/or replace the hard cap with an explicit "keep waiting"/cancel affordance then.
-const POLL_TIMEOUT_MS = 60000;
+const POLL_INTERVAL_MS = 2500;
+// The real pipeline (Screener fetch + several LLM calls) usually finishes in ~1–2 min;
+// allow generous headroom before surfacing a timeout the user can retry from.
+const POLL_TIMEOUT_MS = 240000; // 4 min
 
 // ── API client (talks to worker/index.js) ────────────────────────────────────
 const api = {
@@ -23,27 +23,28 @@ const api = {
     if (!res.ok) throw new Error(`/api/universe → ${res.status}`);
     return res.json();
   },
-  async analyze(slug) {
+  // Dispatch (or reuse) a run. target = { name, ticker, slug }; force re-runs a fresh report.
+  async analyze(target, force = false) {
     const res = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slug }),
+      body: JSON.stringify({ company: target.name, ticker: target.ticker, slug: target.slug, force }),
     });
-    if (!res.ok) throw new Error(`/api/analyze → ${res.status}`);
-    return res.json(); // { ok, slug, status: "queued" | "done" }
+    let body = {};
+    try { body = await res.json(); } catch { /* empty */ }
+    if (!res.ok && body.status !== "queued" && body.status !== "done") {
+      throw new Error(body.error || `/api/analyze → ${res.status}`);
+    }
+    return body; // { ok, slug, status: "queued" | "done" | "running" | "error" }
   },
-  // One poll tick. 200 → { done, report }. 404 queued/unknown → { done:false, status }.
-  // Any OTHER non-200 (500 asset/KV failure, 400, unexpected shape) is a real error —
-  // throw it so the UI surfaces it instead of silently polling to a 60s timeout.
+  // One poll tick → a pollDecision ({ action: "done"|"wait"|"error", … }). A hard transport
+  // failure with no status body is thrown so the UI surfaces it instead of polling to timeout.
   async reportTick(slug) {
     const res = await fetch(`/api/report?slug=${encodeURIComponent(slug)}`);
-    if (res.status === 200) return { done: true, report: await res.json() };
     let body = {};
-    try { body = await res.json(); } catch { /* empty body */ }
-    if (res.status === 404 && (body.status === "queued" || body.status === "unknown")) {
-      return { done: false, status: body.status };
-    }
-    throw new Error(body.error || `report fetch failed (HTTP ${res.status})`);
+    try { body = await res.json(); } catch { /* empty */ }
+    if (!res.ok && !body.status) throw new Error(body.error || `report fetch failed (HTTP ${res.status})`);
+    return pollDecision(body);
   },
 };
 
@@ -196,7 +197,7 @@ function invalidateSelection() {
   if (!state.selected) return;
   state.selected = null;
   hideChip();
-  els.run.disabled = true;
+  updateRunEnabled(); // free text can still run
   // Editing away from the selected company makes its report stale — clear it.
   if (state.shownSlug) clearReport();
 }
@@ -213,15 +214,21 @@ function clearAll() {
 }
 
 // ── Run-state machine ─────────────────────────────────────────────────────────
+/** Run is enabled when there's a universe selection OR any free-text company, and no run is active. */
+function updateRunEnabled() {
+  els.run.disabled = state.running || !(state.selected || els.input.value.trim());
+}
+
 function setControlsDisabled(disabled) {
   els.input.disabled = disabled;
   els.clear.disabled = disabled;
-  els.run.disabled = disabled || !state.selected;
+  updateRunEnabled();
 }
 
-async function runAnalyze() {
-  if (!state.selected || state.running) return;
-  const company = state.selected;
+async function runAnalyze(force = false) {
+  if (state.running) return;
+  const company = resolveTarget(state.selected, els.input.value);
+  if (!company) return;
   const token = ++runToken; // supersede any prior in-flight run
   state.running = true;
   setControlsDisabled(true);
@@ -229,19 +236,18 @@ async function runAnalyze() {
   renderAnalyzing(company);
 
   try {
-    const dispatch = await api.analyze(company.slug);
+    const dispatch = await api.analyze(company, force);
     if (token !== runToken) return;
-    setAnalyzingNote(dispatch.status === "done" ? "Cached — fetching report…" : "Queued — waiting for the pipeline…");
+    if (dispatch.status === "error") { renderError(company, dispatch.error || "Could not start the analysis.", "error"); return; }
+    setAnalyzingNote(dispatch.status === "done" ? "Cached — fetching report…" : "Queued — this usually takes ~1–2 min…");
 
     const report = await pollLoop(company.slug, token);
     if (token !== runToken) return;
 
-    console.log("[munshot] report loaded:", report);
     renderLoaded(company, report);
   } catch (err) {
     if (token !== runToken) return;
-    if (err.name === "TimeoutError") renderError(company, "Timed out after 60s waiting for the report.", "timeout");
-    else if (err.name === "UnknownError") renderError(company, "No analysis job was found for this company.", "error");
+    if (err.name === "TimeoutError") renderError(company, "This is taking longer than expected. The run may still finish — try again in a minute.", "timeout");
     else renderError(company, err.message || String(err), "error");
   } finally {
     if (token === runToken) {
@@ -253,18 +259,16 @@ async function runAnalyze() {
 
 async function pollLoop(slug, token) {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
-  let attempt = 0;
+  const started = Date.now();
   while (Date.now() < deadline) {
     if (token !== runToken) return null; // superseded → bail quietly
-    attempt += 1;
-    const tick = await api.reportTick(slug);
+    const decision = await api.reportTick(slug);
     if (token !== runToken) return null;
 
-    if (tick.done) return tick.report;
-    if (tick.status === "unknown") {
-      const e = new Error("unknown"); e.name = "UnknownError"; throw e;
-    }
-    setAnalyzingNote(`Analyzing… still working (attempt ${attempt}).`);
+    if (decision.action === "done") return decision.report;
+    if (decision.action === "error") { const e = new Error(decision.message); e.name = "AnalysisError"; throw e; }
+    const secs = Math.round((Date.now() - started) / 1000);
+    setAnalyzingNote(`Analyzing… ${decision.status === "running" ? "the pipeline is running" : "waiting for the pipeline"} (${secs}s).`);
     await sleep(POLL_INTERVAL_MS);
   }
   const e = new Error("timeout"); e.name = "TimeoutError"; throw e;
@@ -307,19 +311,21 @@ function setAnalyzingNote(text) {
 
 function renderLoaded(company, report) {
   const meta = report?.meta ?? {};
-  // The stub returns the same sample fixture for every slug. Be honest about it
-  // rather than mislabel the fixture as the searched company.
-  const isFixtureForOther = meta.slug && meta.slug !== company.slug;
-  const note = isFixtureForOther
-    ? `<div class="fade-in mb-4 rounded-xl bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200 px-4 py-2 text-xs">
-         You searched <span class="font-medium">${escapeHtml(company.name)}</span>, but the stub serves one
-         shared sample fixture. The pipeline returns a real per-company report from step 10.
-       </div>`
-    : "";
-  els.reportRoot.innerHTML = note + renderReport(report);
+  const when = meta.generated_at ? new Date(meta.generated_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : null;
+  // Subtle freshness line + a regenerate affordance (re-runs the pipeline, bypassing the cache).
+  const bar = `
+    <div class="fade-in mb-4 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+      <span>${when ? `Generated ${escapeHtml(when)}` : "Live report"} · served from cache when fresh</span>
+      <button id="regen-btn" type="button" class="inline-flex items-center gap-1.5 rounded-full ring-1 ring-inset ring-slate-200 px-3 py-1 font-semibold text-slate-500 hover:bg-slate-50">
+        <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Regenerate
+      </button>
+    </div>`;
+  els.reportRoot.innerHTML = bar + renderReport(report);
   state.shownSlug = company.slug;
   renderIcons();
   hydrateModel(report, els.reportRoot); // wire Section E's editable model → live E + F recompute
+  const regen = qs("#regen-btn");
+  if (regen) regen.addEventListener("click", () => { if (!state.running) runAnalyze(true); });
 }
 
 function renderError(company, message, kind /* "timeout" | "error" */) {
@@ -340,7 +346,25 @@ function renderError(company, message, kind /* "timeout" | "error" */) {
   state.shownSlug = company.slug;
   renderIcons();
   const retry = qs("#retry-btn");
-  if (retry) retry.addEventListener("click", () => { if (state.selected && !state.running) runAnalyze(); });
+  if (retry) retry.addEventListener("click", () => { if (!state.running) runAnalyze(); });
+}
+
+/** First-load demo — render the bundled sample so the dashboard isn't empty; a live run replaces it. */
+async function renderDemo() {
+  try {
+    const res = await fetch("/data/sample-report.json");
+    if (!res.ok) return;
+    const sample = await res.json();
+    const banner = `
+      <div class="fade-in mb-4 rounded-xl bg-indigo-50/70 text-indigo-700 ring-1 ring-inset ring-indigo-100 px-4 py-2 text-xs flex items-center gap-2">
+        <i data-lucide="sparkles" class="w-4 h-4"></i>
+        <span>Sample report — search any listed company above and hit <span class="font-semibold">Analyze</span> for a live deep-dive.</span>
+      </div>`;
+    els.reportRoot.innerHTML = banner + renderReport(sample);
+    renderIcons();
+    hydrateModel(sample, els.reportRoot);
+    state.shownSlug = null; // demo isn't tied to a slug — a real run always supersedes it
+  } catch { /* demo is best-effort */ }
 }
 
 // ── Events ──────────────────────────────────────────────────────────────────────
@@ -350,6 +374,7 @@ function renderError(company, message, kind /* "timeout" | "error" */) {
 function onInputSync() {
   if (state.selected && els.input.value !== state.selected.name) invalidateSelection();
   show(els.clear, els.input.value.length > 0);
+  updateRunEnabled(); // free text enables Run even without a universe pick
 }
 const onInputRender = debounce(() => openList(els.input.value), 80);
 
@@ -409,9 +434,10 @@ async function init() {
   cacheEls();
   wireEvents();
   renderIcons();
+  renderDemo(); // show the sample immediately so the landing isn't blank
   try {
     state.universe = await api.universe();
-    els.input.placeholder = `Search ${state.universe.length} companies — e.g. Navin Fluorine, TCS, SRF…`;
+    els.input.placeholder = `Search ${state.universe.length} companies — or type any name/ticker…`;
   } catch (err) {
     console.error("[munshot] failed to load universe:", err);
     els.reportRoot.innerHTML = `
