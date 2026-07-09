@@ -30,6 +30,17 @@ Each item: what's currently under-constrained, and the intended fix.
 - [ ] **L290 — non-null forecasts for valuation rows.** For rows with key `revenue`, `ebitda`,
   `pat`, require `fy27e`/`fy28e` to be numbers (the valuation recompute divides by them).
   Express with per-key `if/then`. Keep nullability for rows the math doesn't consume.
+- [ ] **`about.margin_by_segment[].ebitda_margin` — allow the verbatim "not disclosed".** The
+  contract types this as a plain `number`, but Step 7 must print `"not disclosed"` verbatim when
+  a segment margin isn't given on the call (task rule: never invent a margin). So the written
+  `report.json` can legitimately carry the **string** `"not disclosed"` (or `null`) here, which
+  the numeric schema would reject. **Interim handling (Step 7):** the extractor's validator
+  (`lib/extract-assemble.mjs → validateBC`) coerces `"not disclosed"`/`null` margins to `0` for
+  the B+C schema check and emits a **warning** (not an error) naming the undisclosed segment, so
+  the real value survives in `report.json`. **Fix at the gate:** relax the schema to
+  `ebitda_margin: { "type": ["number", "string", "null"] }` with `"enum"`-style guard so the only
+  non-number allowed is `"not disclosed"` — then drop the coercion. (Whichever renderer consumes
+  this must already treat a non-number margin as "not disclosed".)
 
 ## Intentionally NOT planned
 - [x] ~~**L267 — make `financials.rows` an object keyed by `key` (true per-key uniqueness)**~~ —
