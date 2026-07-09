@@ -8,10 +8,11 @@
  *   GET  /api/report?slug=…  → the finished report JSON for a company
  *   (anything else)          → falls through to env.ASSETS.fetch(request)
  *
- * ── STEP 1 (this file): STUBS ONLY. No external calls. ──
- * /api/universe and /api/report read the local fixtures via the ASSETS binding.
- * /api/analyze pretends the report is already cached and returns status:"done"
- * so the frontend's request→poll loop is exercisable today.
+ * ── STEP 1-2 (this file): STUBS ONLY. No external calls. ──
+ * /api/universe reads the local fixture via the ASSETS binding. /api/analyze and
+ * /api/report share an in-memory job store (below) that simulates the pipeline:
+ * analyze queues a job; report 404s ("queued") until a short delay elapses, then
+ * 200s the fixture ("done"). This exercises the frontend's real poll loop today.
  *
  * ── STEP 10 will make these real. The contract it will use: ──
  * Secrets (set via `wrangler secret put <NAME>`, never committed):
@@ -71,6 +72,27 @@ async function readAssetJson(env, request, path) {
   return res.json();
 }
 
+/**
+ * In-memory job store — a stand-in for the REPORTS KV until step 10.
+ * Keyed by slug → { status: "queued" | "done", startedAt }. Module-level, so it
+ * lives for the life of the isolate — fine for local `wrangler dev` and this stub;
+ * a real deploy uses durable KV (step 10 wires it in). Never persisted, no external calls.
+ */
+const jobs = new Map();
+
+// Simulated pipeline latency so the frontend poll loop exercises the 404→200 path.
+const SIMULATED_DELAY_MS = 4000;
+
+/** Look up a universe entry by slug — used to remap the fixture to the requested company. */
+async function findCompany(env, request, slug) {
+  try {
+    const universe = await readAssetJson(env, request, "/data/universe.json");
+    return universe.find((c) => c.slug === slug) || null;
+  } catch {
+    return null;
+  }
+}
+
 /** GET /api/universe — the company universe for the search box. */
 async function handleUniverse(env, request) {
   const universe = await readAssetJson(env, request, "/data/universe.json");
@@ -78,8 +100,10 @@ async function handleUniverse(env, request) {
 }
 
 /**
- * POST /api/analyze — STUB. Accepts { slug } (JSON body or ?slug=) and pretends
- * the report is already cached. Step 10 will dispatch the GitHub Action here.
+ * POST /api/analyze { slug } — STUB with a real job lifecycle.
+ * If the job is already "done", report it done. Otherwise (re)queue it, stamping a
+ * start time so /api/report can simulate the pipeline delay. Step 10 replaces this
+ * with a KV check + a GitHub workflow_dispatch.
  */
 async function handleAnalyze(env, request, url) {
   let slug = url.searchParams.get("slug") || "";
@@ -91,19 +115,45 @@ async function handleAnalyze(env, request, url) {
       /* no/invalid body — fall through to the guard below */
     }
   }
-  if (!slug) return json({ ok: false, error: "missing slug" }, 400);
-  // STUB: no dispatch, no KV. Report is served straight from the fixture.
-  return json({ ok: true, slug, status: "done" });
+  if (!slug) return json({ ok: false, status: "error", error: "missing slug" }, 400);
+
+  const existing = jobs.get(slug);
+  if (existing && existing.status === "done") {
+    return json({ ok: true, slug, status: "done" });
+  }
+  jobs.set(slug, { status: "queued", startedAt: Date.now() });
+  return json({ ok: true, slug, status: "queued" });
 }
 
 /**
- * GET /api/report?slug=… — STUB. Always returns the sample fixture regardless of
- * slug. Step 10 will return REPORTS.get(slug) from KV (404 until the Action writes it).
+ * GET /api/report?slug=… — STUB with a genuine 404-until-ready lifecycle:
+ *   • no job for slug            → 404 { status: "unknown" }
+ *   • queued & within the delay  → 404 { status: "queued" }
+ *   • queued & delay elapsed     → flips to "done"
+ *   • done                       → 200 with the report JSON (remapped to the company)
+ * The 200 body is the pure report artifact (has `meta`) — that IS the "done" signal
+ * downstream consumes. Step 10 replaces this with REPORTS.get(slug) from KV.
  */
 async function handleReport(env, request, url) {
   const slug = url.searchParams.get("slug");
-  if (!slug) return json({ ok: false, error: "missing slug" }, 400);
+  if (!slug) return json({ ok: false, status: "error", error: "missing slug" }, 400);
+
+  const job = jobs.get(slug);
+  if (!job) return json({ ok: false, slug, status: "unknown" }, 404);
+
+  if (job.status === "queued") {
+    if (Date.now() - job.startedAt < SIMULATED_DELAY_MS) {
+      return json({ ok: false, slug, status: "queued" }, 404);
+    }
+    job.status = "done"; // delay elapsed → ready
+  }
+
+  // Done → serve the fixture, remapped to the requested company (nice-to-have).
   const report = await readAssetJson(env, request, "/data/sample-report.json");
+  const company = await findCompany(env, request, slug);
+  if (company) {
+    report.meta = { ...report.meta, company: company.name, ticker: company.ticker, slug: company.slug };
+  }
   return json(report);
 }
 

@@ -50,7 +50,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Placeholder — pipeline not built yet
+        # Route untrusted workflow inputs through env vars. Never interpolate
+        # ${{ inputs.* }} directly into a run: script — GitHub expands the template
+        # into the shell source before bash runs, so a crafted input (quotes,
+        # $(...)) would be executed. As env vars they are plain, inert strings.
+        env:
+          SLUG: ${{ inputs.slug }}
+          COMPANY: ${{ inputs.company }}
+          TICKER: ${{ inputs.ticker }}
         run: |
-          echo "STUB: analyze pipeline is not implemented yet (step 1)."
-          echo "slug=${{ inputs.slug }} company=${{ inputs.company }} ticker=${{ inputs.ticker }}"
+          echo "STUB: analyze pipeline is not implemented yet."
+          echo "slug=$SLUG company=$COMPANY ticker=$TICKER"
           echo "Later steps: fetch → LLM → validate against report.schema.json → write to KV."

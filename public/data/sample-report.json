@@ -118,13 +118,13 @@
 
   "financials": {
     "rows": [
-      { "metric": "Revenue", "fy26a": 2500, "fy27e": 3100, "fy28e": 3800, "driver": "cGMP-4 ramp + CDMO molecule additions; HPP flattish until agrochem recovers." },
-      { "metric": "Gross margin %", "fy26a": 48.0, "fy27e": 49.0, "fy28e": 50.0, "driver": "Richer CDMO mix and better fluorspar sourcing." },
-      { "metric": "EBITDA", "fy26a": 575, "fy27e": 775, "fy28e": 988, "driver": "Operating leverage on new blocks as utilisation climbs." },
-      { "metric": "EBITDA margin %", "fy26a": 23.0, "fy27e": 25.0, "fy28e": 26.0, "driver": "Mix shift to high-value CDMO; R32 headwind lapping." },
-      { "metric": "Adjusted EBITDA margin %", "fy26a": 23.5, "fy27e": 25.4, "fy28e": 26.3, "driver": "Excludes cGMP-4 commissioning / start-up costs." },
-      { "metric": "PAT", "fy26a": 340, "fy27e": 465, "fy28e": 605, "driver": "EBITDA growth partly offset by higher interest and depreciation on capex." },
-      { "metric": "Net margin %", "fy26a": 13.6, "fy27e": 15.0, "fy28e": 15.9, "driver": "Margin expansion outpaces the drag from capex-linked D&A and interest." }
+      { "key": "revenue", "metric": "Revenue", "unit": "rs_cr", "fy26a": 2500, "fy27e": 3100, "fy28e": 3800, "driver": "cGMP-4 ramp + CDMO molecule additions; HPP flattish until agrochem recovers." },
+      { "key": "gross_margin_pct", "metric": "Gross margin %", "unit": "pct", "fy26a": 48.0, "fy27e": 49.0, "fy28e": 50.0, "driver": "Richer CDMO mix and better fluorspar sourcing." },
+      { "key": "ebitda", "metric": "EBITDA", "unit": "rs_cr", "fy26a": 575, "fy27e": 775, "fy28e": 988, "driver": "Operating leverage on new blocks as utilisation climbs." },
+      { "key": "ebitda_margin_pct", "metric": "EBITDA margin %", "unit": "pct", "fy26a": 23.0, "fy27e": 25.0, "fy28e": 26.0, "driver": "Mix shift to high-value CDMO; R32 headwind lapping." },
+      { "key": "adj_ebitda_margin_pct", "metric": "Adjusted EBITDA margin %", "unit": "pct", "fy26a": 23.5, "fy27e": 25.4, "fy28e": 26.3, "driver": "Excludes cGMP-4 commissioning / start-up costs." },
+      { "key": "pat", "metric": "PAT", "unit": "rs_cr", "fy26a": 340, "fy27e": 465, "fy28e": 605, "driver": "EBITDA growth partly offset by higher interest and depreciation on capex." },
+      { "key": "net_margin_pct", "metric": "Net margin %", "unit": "pct", "fy26a": 13.6, "fy27e": 15.0, "fy28e": 15.9, "driver": "Margin expansion outpaces the drag from capex-linked D&A and interest." }
     ],
     "assumptions": {
       "revenue_growth": { "fy27": 24.0, "fy28": 22.6, "basis": "cGMP-4 contributes from H2FY27, full-year in FY28; two commercial molecules ramping, HPP flattish." },

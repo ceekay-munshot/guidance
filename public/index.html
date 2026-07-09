@@ -176,19 +176,9 @@
       </div>
     </div>
 
-    <!-- Analyzing state (hidden until a run starts) -->
-    <div id="analyzing" class="hidden fade-in max-w-2xl mx-auto mt-6">
-      <div class="card p-6 flex items-center gap-4">
-        <div class="spinner"></div>
-        <div>
-          <p class="font-display font-semibold">Analyzing<span id="analyzing-dots">…</span></p>
-          <p id="analyzing-detail" class="text-sm text-slate-500">Dispatching run and waiting for the report.</p>
-        </div>
-      </div>
-    </div>
   </section>
 
-  <!-- Report renders here (step 3 builds the renderer; empty for now) -->
+  <!-- Run states (analyzing / loaded / error) and, from step 3, the report render here. -->
   <main id="report-root" class="max-w-5xl mx-auto px-6 py-10"></main>
 
   <footer class="max-w-5xl mx-auto px-6 pb-10 text-xs text-slate-400">

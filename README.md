@@ -8,9 +8,11 @@ financial model, valuation, and a Buy/Hold/Avoid-watch verdict. **One run = one 
 Static site, no build step. Vanilla JS ES modules; Tailwind, fonts, Lucide, ECharts and
 ExcelJS all via CDN. Served by a Cloudflare Worker that also owns the `/api/*` routes.
 
-> **Build status:** Step 1 of ~12 — the themed shell + the report **contract**
-> (`public/data/report.schema.json`) + stubbed API. The report renderer, the real
-> compute pipeline, KV, and GitHub dispatch come in later steps.
+> **Build status:** Step 2 of ~12 — themed shell + report **contract**
+> (`public/data/report.schema.json`) + a production type-ahead search + a real
+> request→poll run-state machine against a fixture-backed Worker that simulates the
+> job lifecycle (queued → done). The report renderer, real compute pipeline, KV, and
+> GitHub dispatch come in later steps.
 
 ## Architecture
 
@@ -63,9 +65,11 @@ No install for the frontend — it's CDN-only. To run the Worker + static assets
 npx wrangler dev
 ```
 
-Then open the printed localhost URL. `/api/universe` and `/api/report` serve the local
-fixtures; `POST /api/analyze` returns `{ ok:true, slug, status:"done" }` so the
-request→poll loop works end-to-end today.
+Then open the printed localhost URL. `/api/universe` serves the local fixture.
+`POST /api/analyze` queues an in-memory job (`status:"queued"`, or `"done"` if already
+run); `GET /api/report?slug=…` returns 404 (`{status:"queued"}`) until a short simulated
+delay elapses, then 200 with the sample report — so the real request→poll loop runs
+end-to-end today. (The in-memory store is a stand-in for the `REPORTS` KV until step 10.)
 
 ## Deployment
 

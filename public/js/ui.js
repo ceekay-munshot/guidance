@@ -8,6 +8,9 @@ export const qsa = (sel, root = document) => Array.from(root.querySelectorAll(se
 /** Resolve after `ms` — used by the report poll loop. */
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Clamp `n` into [lo, hi]. */
+export const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+
 /** Debounce `fn` by `ms` (leading-edge off). */
 export function debounce(fn, ms = 120) {
   let t;

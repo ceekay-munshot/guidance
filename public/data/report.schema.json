@@ -40,8 +40,9 @@
         },
         "inputs": {
           "type": "object",
-          "description": "Price/size inputs the valuation math must reconcile against. market_cap_cr = cmp * shares_out_cr; EV = market_cap_cr + net_debt_cr.",
+          "description": "Price/size inputs the valuation math must reconcile against. market_cap_cr = cmp * shares_out_cr; EV = market_cap_cr + net_debt_cr. All are required — valuation (P/E, EV/EBITDA, P/S) cannot be computed without them.",
           "additionalProperties": false,
+          "required": ["cmp", "cmp_date", "shares_out_cr", "market_cap_cr", "net_debt_cr"],
           "properties": {
             "cmp": { "type": "number", "description": "Current market price per share (INR)." },
             "cmp_date": { "type": "string", "format": "date", "description": "Date CMP was captured." },
@@ -259,13 +260,19 @@
       "properties": {
         "rows": {
           "type": "array",
-          "description": "One object per metric. Convention (in order): Revenue, Gross margin %, EBITDA, EBITDA margin %, Adjusted EBITDA margin % (optional), PAT, Net margin %. Absolute figures in INR crore; '%' metrics as percentages.",
+          "description": "One object per metric. Convention (in order): Revenue, Gross margin %, EBITDA, EBITDA margin %, Adjusted EBITDA margin % (optional), PAT, Net margin %. Absolute rows carry unit 'rs_cr' (INR crore); margin rows carry unit 'pct'. Downstream code keys off the stable `key`, never the display `metric`.",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["metric", "fy26a", "fy27e", "fy28e", "driver"],
+            "required": ["key", "metric", "unit", "fy26a", "fy27e", "fy28e", "driver"],
             "properties": {
-              "metric": { "type": "string" },
+              "key": {
+                "type": "string",
+                "enum": ["revenue", "gross_margin_pct", "ebitda", "ebitda_margin_pct", "adj_ebitda_margin_pct", "pat", "net_margin_pct"],
+                "description": "Stable machine id. Step-5's valuation recompute derives EV/EBITDA, P/S and P/E from these keys deterministically — never by string-matching the display label. `adj_ebitda_margin_pct` is the one optional row."
+              },
+              "metric": { "type": "string", "description": "Human display label." },
+              "unit": { "type": "string", "enum": ["rs_cr", "pct"], "description": "'rs_cr' = INR crore (absolute); 'pct' = percentage." },
               "fy26a": { "type": ["number", "null"], "description": "FY26 actual." },
               "fy27e": { "type": ["number", "null"], "description": "FY27 estimate." },
               "fy28e": { "type": ["number", "null"], "description": "FY28 estimate." },
