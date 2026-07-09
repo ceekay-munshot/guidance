@@ -5,6 +5,7 @@
 // and logs the report object; it does NOT render the full report yet.
 
 import { qs, qsa, sleep, debounce, escapeHtml, highlightMatch, renderIcons, show, clamp } from "./ui.js";
+import { renderReport } from "./report.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 const MAX_RESULTS = 8;        // cap the visible suggestion list
@@ -309,28 +310,13 @@ function renderLoaded(company, report) {
   // The stub returns the same sample fixture for every slug. Be honest about it
   // rather than mislabel the fixture as the searched company.
   const isFixtureForOther = meta.slug && meta.slug !== company.slug;
-  els.reportRoot.innerHTML = `
-    <div class="card card-hover fade-in p-6 sm:p-8">
-      <div class="flex items-center gap-2 text-emerald-600 font-medium mb-3">
-        <i data-lucide="check-circle-2" class="w-5 h-5"></i>
-        <span>Report loaded ✓</span>
-      </div>
-      <h2 class="font-display text-2xl font-bold">${escapeHtml(meta.company ?? company.name)}</h2>
-      <p class="text-slate-500 mt-1">
-        <span class="font-mono">${escapeHtml(meta.ticker ?? company.ticker)}</span>
-        · ${escapeHtml(meta.quarter ?? "—")}
-        · verdict <span class="font-semibold text-slate-700">${escapeHtml(report?.next_steps?.conviction ?? "—")}</span>
-      </p>
-      ${isFixtureForOther ? `
-      <p class="text-xs text-amber-600 mt-3">
-        You searched <span class="font-medium">${escapeHtml(company.name)}</span>, but the stub
-        serves one shared sample fixture. The pipeline returns a real per-company report from step 10.
-      </p>` : ""}
-      <p class="text-sm text-slate-400 mt-4">
-        Full report renderer arrives in <span class="font-medium text-slate-500">step 3</span>.
-        The payload is in the console.
-      </p>
-    </div>`;
+  const note = isFixtureForOther
+    ? `<div class="fade-in mb-4 rounded-xl bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200 px-4 py-2 text-xs">
+         You searched <span class="font-medium">${escapeHtml(company.name)}</span>, but the stub serves one
+         shared sample fixture. The pipeline returns a real per-company report from step 10.
+       </div>`
+    : "";
+  els.reportRoot.innerHTML = note + renderReport(report);
   state.shownSlug = company.slug;
   renderIcons();
 }
