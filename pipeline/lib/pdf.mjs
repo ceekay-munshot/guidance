@@ -8,7 +8,11 @@
 export async function extractPdfText(data) {
   // Imported lazily so the module loads even before the no-save install runs.
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  // Always hand pdfjs a fresh *plain* Uint8Array copy:
+  //  - fetched bytes arrive as a Node Buffer, which pdfjs rejects (even though Buffer IS a
+  //    Uint8Array subclass), so we must not pass it through;
+  //  - pdfjs may transfer/detach its input buffer, so copying protects the caller's bytes.
+  const bytes = new Uint8Array(data);
   // No worker in Node — pdfjs runs on the main thread (fake worker).
   const loadingTask = pdfjs.getDocument({ data: bytes, isEvalSupported: false, useSystemFonts: true });
   const doc = await loadingTask.promise;
