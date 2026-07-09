@@ -23,12 +23,13 @@ const api = {
     if (!res.ok) throw new Error(`/api/universe → ${res.status}`);
     return res.json();
   },
-  // Dispatch (or reuse) a run. target = { name, ticker, slug }; force re-runs a fresh report.
+  // Dispatch (or reuse) a run. target = { name, ticker }; force (a real boolean) re-runs a fresh
+  // report. The Worker derives the KV slug from the company itself, so we don't send one.
   async analyze(target, force = false) {
     const res = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ company: target.name, ticker: target.ticker, slug: target.slug, force }),
+      body: JSON.stringify({ company: target.name, ticker: target.ticker, force: force === true }),
     });
     let body = {};
     try { body = await res.json(); } catch { /* empty */ }
@@ -241,7 +242,8 @@ async function runAnalyze(force = false) {
     if (dispatch.status === "error") { renderError(company, dispatch.error || "Could not start the analysis.", "error"); return; }
     setAnalyzingNote(dispatch.status === "done" ? "Cached — fetching report…" : "Queued — this usually takes ~1–2 min…");
 
-    const report = await pollLoop(company.slug, token);
+    // Poll the slug the Worker actually keyed (server-derived), falling back to our own.
+    const report = await pollLoop(dispatch.slug || company.slug, token);
     if (token !== runToken) return;
 
     renderLoaded(company, report);
@@ -421,7 +423,7 @@ function wireEvents() {
   });
 
   els.clear.addEventListener("click", clearAll);
-  els.run.addEventListener("click", runAnalyze);
+  els.run.addEventListener("click", () => runAnalyze()); // wrap: don't pass the MouseEvent as `force`
 
   // Click-outside closes the dropdown.
   document.addEventListener("click", (e) => {

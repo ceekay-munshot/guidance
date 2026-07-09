@@ -11,9 +11,10 @@ ok(slugify("Navin Fluorine International Ltd") === "navin-fluorine-international
 ok(slugify("Tata Consultancy Services (TCS)") === "tata-consultancy-services-tcs", "slugify: strips punctuation");
 ok(slugify("  ") === "company", "slugify: blank → 'company' sentinel");
 
-// ── resolveTarget: universe pick keeps its slug; free text is slugified ──
-const picked = resolveTarget({ name: "SRF Ltd", ticker: "SRF", slug: "srf-ltd" }, "ignored");
-ok(picked.slug === "srf-ltd" && picked.ticker === "SRF", "resolveTarget: universe selection keeps canonical slug");
+// ── resolveTarget: slug is ALWAYS slugify(name) — matches the Worker's server-derived key ──
+const picked = resolveTarget({ name: "SRF Ltd", ticker: "SRF", slug: "attacker-supplied" }, "ignored");
+ok(picked.slug === slugify("SRF Ltd") && picked.slug !== "attacker-supplied", "resolveTarget: slug derived from name, not a passed slug");
+ok(picked.ticker === "SRF" && picked.name === "SRF Ltd", "resolveTarget: keeps the display name + ticker");
 const free = resolveTarget(null, "Deepak Nitrite");
 ok(free.slug === "deepak-nitrite" && free.name === "Deepak Nitrite" && free.ticker === "", "resolveTarget: free text → slugified target");
 ok(resolveTarget(null, "   ") === null, "resolveTarget: empty input → null");

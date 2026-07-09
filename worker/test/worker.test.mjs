@@ -1,20 +1,30 @@
 // worker.test.mjs — offline unit tests for the Step-10 Worker (no network, no deps).
 // Run: node worker/test/worker.test.mjs
-// Mocks the REPORTS KV (Map-backed) and ASSETS, and stubs global fetch to count workflow
-// dispatches — verifying freshness caching, in-flight dedup, dispatch, and the report contract.
+// Mocks the REPORTS KV (Map-backed) and ASSETS, and stubs global fetch to capture workflow
+// dispatches — verifying server-derived slugs, freshness caching, in-flight dedup + stale recovery,
+// the report contract, and that the token never leaks.
 
 import worker, { __test } from "../index.js";
 
 let fails = 0;
 const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + " — " + m); if (!c) fails++; };
 
+const CO = "Navin Fluorine";
+const SLUG = __test.slugify(CO); // "navin-fluorine" — the server-derived KV key
+const nowIso = () => new Date().toISOString();
+const agoIso = (ms) => new Date(Date.now() - ms).toISOString();
+const j = (o) => JSON.stringify(o);
+const freshReport = { meta: { slug: SLUG, generated_at: nowIso() } };
+const staleReport = { meta: { slug: SLUG, generated_at: "2020-01-01T00:00:00Z" } };
+
 // ── harness ──
 let dispatches = [];
-globalThis.fetch = async (url) => {
-  if (String(url).includes("/actions/workflows/")) { dispatches.push(String(url)); return new Response(null, { status: 204 }); }
-  return new Response("{}", { status: 200 });
-};
-
+function stubDispatchOk() {
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes("/actions/workflows/")) { dispatches.push({ url: String(url), body: JSON.parse(opts.body) }); return new Response(null, { status: 204 }); }
+    return new Response("{}", { status: 200 });
+  };
+}
 function makeEnv({ token = "tok", kv = {} } = {}) {
   const store = new Map(Object.entries(kv));
   return {
@@ -29,78 +39,79 @@ function makeEnv({ token = "tok", kv = {} } = {}) {
 }
 const post = (env, path, body) => worker.fetch(new Request(`https://x${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }), env);
 const get = (env, path) => worker.fetch(new Request(`https://x${path}`, { method: "GET" }), env);
-const freshReport = { meta: { slug: "navinfluor", generated_at: new Date().toISOString() } };
-const staleReport = { meta: { slug: "navinfluor", generated_at: "2020-01-01T00:00:00Z" } };
-const j = (o) => JSON.stringify(o);
+stubDispatchOk();
 
 // ── helpers ──
-ok(__test.slugify("Navin Fluorine International Ltd") === "navin-fluorine-international-ltd", "slugify matches the shared convention");
-ok(__test.isFresh(freshReport) === true && __test.isFresh(staleReport) === false, "isFresh: recent true, old false");
+ok(SLUG === "navin-fluorine", "slugify derives the KV key from the company name");
+ok(__test.isFresh(freshReport) && !__test.isFresh(staleReport), "isFresh: recent true, old false");
+ok(__test.isStatusStale({ state: "running", updated_at: agoIso(20 * 60 * 1000) }) === true, "isStatusStale: 20-min-old status is stale");
+ok(__test.isStatusStale({ state: "running", updated_at: nowIso() }) === false, "isStatusStale: just-updated status is fresh");
 
-// ── analyze: cold start → queued + one dispatch ──
+// ── analyze: cold start → queued + one dispatch under the DERIVED slug ──
 dispatches = [];
 let env = makeEnv();
-let res = await post(env, "/api/analyze", { company: "Navin Fluorine", slug: "navinfluor" });
-let body = await res.json();
-ok(body.status === "queued" && dispatches.length === 1, "cold analyze → queued + dispatches the Action once");
-ok(JSON.parse(env.__store.get("status:navinfluor")).state === "queued", "cold analyze wrote status:navinfluor = queued");
+let body = await (await post(env, "/api/analyze", { company: CO })).json();
+ok(body.status === "queued" && body.slug === SLUG && dispatches.length === 1, "cold analyze → queued + one dispatch, server slug");
+ok(env.__store.has(`status:${SLUG}`) && dispatches[0].body.inputs.slug === SLUG, "dispatch carries the server-derived slug");
 
-// ── analyze: fresh cached report → done, NO dispatch ──
+// ── P1: a client-supplied slug is IGNORED (no cache poisoning) ──
 dispatches = [];
-env = makeEnv({ kv: { "report:navinfluor": j(freshReport) } });
-body = await (await post(env, "/api/analyze", { company: "Navin Fluorine", slug: "navinfluor" })).json();
-ok(body.status === "done" && dispatches.length === 0, "fresh report → done, no dispatch (cache)");
+env = makeEnv();
+body = await (await post(env, "/api/analyze", { company: CO, slug: "some-other-company" })).json();
+ok(body.slug === SLUG && dispatches[0].body.inputs.slug === SLUG, "client slug is ignored — slug derived from company");
+ok(env.__store.has(`status:${SLUG}`) && !env.__store.has("status:some-other-company"), "no KV write under the attacker-chosen key");
 
-// ── analyze: job already in flight → return state, NO duplicate dispatch ──
+// ── analyze: fresh cached report → done, no dispatch ──
 dispatches = [];
-env = makeEnv({ kv: { "status:navinfluor": j({ state: "running" }) } });
-body = await (await post(env, "/api/analyze", { company: "Navin Fluorine", slug: "navinfluor" })).json();
-ok(body.status === "running" && dispatches.length === 0, "in-flight job → returns state, no duplicate dispatch");
+body = await (await post(makeEnv({ kv: { [`report:${SLUG}`]: j(freshReport) } }), "/api/analyze", { company: CO })).json();
+ok(body.status === "done" && dispatches.length === 0, "fresh report → done, no dispatch");
 
-// ── analyze: force re-runs even when fresh ──
+// ── analyze: fresh in-flight job → return state, NO duplicate dispatch ──
 dispatches = [];
-env = makeEnv({ kv: { "report:navinfluor": j(freshReport) } });
-body = await (await post(env, "/api/analyze", { company: "Navin Fluorine", slug: "navinfluor", force: true }).then((r) => r)).json();
-ok(body.status === "queued" && dispatches.length === 1, "force bypasses freshness → dispatches");
+body = await (await post(makeEnv({ kv: { [`status:${SLUG}`]: j({ state: "running", updated_at: nowIso() }) } }), "/api/analyze", { company: CO })).json();
+ok(body.status === "running" && dispatches.length === 0, "fresh in-flight job → returns state, no duplicate dispatch");
+
+// ── analyze: STALE in-flight job → re-dispatches (stuck-run recovery) ──
+dispatches = [];
+body = await (await post(makeEnv({ kv: { [`status:${SLUG}`]: j({ state: "queued", updated_at: agoIso(20 * 60 * 1000) }) } }), "/api/analyze", { company: CO })).json();
+ok(body.status === "queued" && dispatches.length === 1, "stale in-flight job → re-dispatches (not stuck forever)");
+
+// ── analyze: force bypasses freshness AND a live status ──
+dispatches = [];
+body = await (await post(makeEnv({ kv: { [`report:${SLUG}`]: j(freshReport), [`status:${SLUG}`]: j({ state: "running", updated_at: nowIso() }) } }), "/api/analyze", { company: CO, force: true })).json();
+ok(body.status === "queued" && dispatches.length === 1, "force → re-dispatches past cache + live status");
 
 // ── analyze: stale report → re-runs ──
 dispatches = [];
-env = makeEnv({ kv: { "report:navinfluor": j(staleReport) } });
-body = await (await post(env, "/api/analyze", { company: "Navin Fluorine", slug: "navinfluor" })).json();
+body = await (await post(makeEnv({ kv: { [`report:${SLUG}`]: j(staleReport) } }), "/api/analyze", { company: CO })).json();
 ok(body.status === "queued" && dispatches.length === 1, "stale report → re-dispatches");
 
-// ── analyze: not configured (no token) → 503, no dispatch ──
+// ── analyze: not configured / bad input ──
 dispatches = [];
-env = makeEnv({ token: null }); // null (not undefined) so it isn't replaced by the destructuring default
-res = await post(env, "/api/analyze", { company: "Navin Fluorine", slug: "navinfluor" });
+let res = await post(makeEnv({ token: null }), "/api/analyze", { company: CO });
 ok(res.status === 503 && dispatches.length === 0, "missing GITHUB_TOKEN → 503, never dispatches");
+ok((await post(makeEnv(), "/api/analyze", {})).status === 400, "analyze with no company → 400");
 
-// ── analyze: missing company → 400 ──
-res = await post(makeEnv(), "/api/analyze", {});
-ok(res.status === 400, "analyze with no company → 400");
+// ── report: contract ──
+body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j(freshReport) } }), `/api/report?slug=${SLUG}`)).json();
+ok(body.status === "done" && body.report && body.report.meta.slug === SLUG, "report present (no run) → done + the report");
 
-// ── report: done / queued / error / unknown ──
-env = makeEnv({ kv: { "report:navinfluor": j(freshReport) } });
-body = await (await get(env, "/api/report?slug=navinfluor")).json();
-ok(body.status === "done" && body.report && body.report.meta.slug === "navinfluor", "report present → done + the report");
+// finding-5: a FRESH in-flight run must win over an old cached report (don't serve stale on regenerate)
+body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j(freshReport), [`status:${SLUG}`]: j({ state: "running", updated_at: nowIso() }) } }), `/api/report?slug=${SLUG}`)).json();
+ok(body.status === "running", "fresh in-flight run wins over an existing report (client keeps polling)");
 
-env = makeEnv({ kv: { "status:navinfluor": j({ state: "running", message: "Analyzing…" }) } });
-body = await (await get(env, "/api/report?slug=navinfluor")).json();
-ok(body.status === "running", "status running → running (client keeps polling)");
+// but a STALE in-flight status must not hide a usable report forever
+body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j(freshReport), [`status:${SLUG}`]: j({ state: "running", updated_at: agoIso(20 * 60 * 1000) }) } }), `/api/report?slug=${SLUG}`)).json();
+ok(body.status === "done" && body.report, "stale in-flight status falls back to serving the report");
 
-env = makeEnv({ kv: { "status:navinfluor": j({ state: "error", message: "not resolvable" }) } });
-body = await (await get(env, "/api/report?slug=navinfluor")).json();
+body = await (await get(makeEnv({ kv: { [`status:${SLUG}`]: j({ state: "error", message: "not resolvable" }) } }), `/api/report?slug=${SLUG}`)).json();
 ok(body.status === "error" && /not resolvable/.test(body.error), "status error → error + message");
-
-body = await (await get(makeEnv(), "/api/report?slug=navinfluor")).json();
-ok(body.status === "unknown", "no report/status → unknown");
+ok((await (await get(makeEnv(), `/api/report?slug=${SLUG}`)).json()).status === "unknown", "no report/status → unknown");
 
 // ── the token is never leaked in a response ──
-dispatches = [];
 globalThis.fetch = async (url) => { if (String(url).includes("/actions/workflows/")) return new Response("boom", { status: 500 }); return new Response("{}", { status: 200 }); };
-res = await post(makeEnv({ token: "SUPER_SECRET_TOKEN" }), "/api/analyze", { company: "X", slug: "x" });
-const raw = await res.text();
-ok(!raw.includes("SUPER_SECRET_TOKEN"), "a dispatch failure never leaks the token in the response");
+res = await post(makeEnv({ token: "SUPER_SECRET_TOKEN" }), "/api/analyze", { company: "X" });
+ok(!(await res.text()).includes("SUPER_SECRET_TOKEN"), "a dispatch failure never leaks the token in the response");
 
 console.log(fails === 0 ? "\nWORKER (Step 10) OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);
 process.exit(fails ? 1 : 0);

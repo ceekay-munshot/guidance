@@ -63,6 +63,13 @@ on:
 permissions:
   contents: read
 
+# Collapse duplicate runs for the same company (e.g. two users clicking Analyze in the KV
+# read-then-write race window) into one — the newest supersedes an in-progress duplicate, so we
+# never burn two full pipelines on the same slug. Keyed by slug (live) or company (manual runs).
+concurrency:
+  group: fetch-company-${{ inputs.slug || inputs.company }}
+  cancel-in-progress: true
+
 jobs:
   fetch:
     runs-on: ubuntu-latest

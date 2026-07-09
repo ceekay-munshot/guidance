@@ -14,11 +14,13 @@ export function slugify(s) {
 }
 
 /**
- * Resolve the analysis target from a universe selection OR free text. A universe pick keeps its
- * canonical slug; free text is slugified. Returns { name, ticker, slug } or null when empty.
+ * Resolve the analysis target from a universe selection OR free text. Returns { name, ticker, slug }
+ * or null when empty. The slug is ALWAYS slugify(name) — the same value the Worker derives
+ * server-side from the company — so the client polls exactly the KV key the Action writes. (The
+ * Worker ignores any client slug; this keeps the poll target in sync with it.)
  */
 export function resolveTarget(selected, inputText) {
-  if (selected && selected.slug) return { name: selected.name, ticker: selected.ticker || "", slug: selected.slug };
+  if (selected && selected.name) return { name: selected.name, ticker: selected.ticker || "", slug: slugify(selected.name) };
   const name = String(inputText || "").trim();
   return name ? { name, ticker: "", slug: slugify(name) } : null;
 }
