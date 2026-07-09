@@ -485,18 +485,25 @@ const MODEL_COMPUTED = new Set(["revenue", "ebitda", "ebitda_margin_pct", "pat",
 const rowByKey = (report, key) => (report.financials?.rows ?? []).find((r) => r.key === key) || {};
 
 /** Seed the editable levers from assumptions + the FY27/FY28 row values + inputs.cmp. */
-function seedEdits(report) {
+export function seedEdits(report) {
   const a = report.financials?.assumptions ?? {};
   const inputs = report.meta?.inputs ?? {};
   const em = rowByKey(report, "ebitda_margin_pct");
   const nm = rowByKey(report, "net_margin_pct");
+  const rev = rowByKey(report, "revenue"), eb = rowByKey(report, "ebitda"), pat = rowByKey(report, "pat");
+  // When a margin row is null, infer it from the reported abs rows (ebitda/pat ÷ revenue) so
+  // seeding preserves the reported earnings instead of zeroing PAT on the first edit.
+  const impliedMargin = (numer, denom) => {
+    const n = asNum(numer, null), d = asNum(denom, null);
+    return n !== null && d !== null && d !== 0 ? (n / d) * 100 : 0;
+  };
   return {
     growth_fy27: asNum(a.revenue_growth?.fy27, 0),
     growth_fy28: asNum(a.revenue_growth?.fy28, 0),
-    ebitda_margin_fy27: asNum(em.fy27e, asNum(a.margin?.fy27, 0)),
-    ebitda_margin_fy28: asNum(em.fy28e, asNum(a.margin?.fy28, 0)),
-    net_margin_fy27: asNum(nm.fy27e, 0),
-    net_margin_fy28: asNum(nm.fy28e, 0),
+    ebitda_margin_fy27: asNum(em.fy27e, asNum(a.margin?.fy27, impliedMargin(eb.fy27e, rev.fy27e))),
+    ebitda_margin_fy28: asNum(em.fy28e, asNum(a.margin?.fy28, impliedMargin(eb.fy28e, rev.fy28e))),
+    net_margin_fy27: asNum(nm.fy27e, impliedMargin(pat.fy27e, rev.fy27e)),
+    net_margin_fy28: asNum(nm.fy28e, impliedMargin(pat.fy28e, rev.fy28e)),
     cmp: asNum(inputs.cmp, 0),
   };
 }
@@ -511,17 +518,19 @@ export function computeModel(report, edits) {
   const revRow = rowByKey(report, "revenue");
 
   const g27 = asNum(e.growth_fy27, 0), g28 = asNum(e.growth_fy28, 0);
-  // Base-year revenue. FY26A is nullable in the schema — if it's absent, back out an
-  // implied base from the reported FY27E so forecasts reconcile instead of zeroing out.
+  // Base-year revenue. FY26A is nullable in the schema — if it's absent, back out an implied
+  // base from the reported FY27E using the report's OWN growth assumption (the seed, not the
+  // edited lever), so at seed it reconciles to FY27E AND the FY27 growth lever still moves FY27.
   let revA = asNum(revRow.fy26a, null);
   if (revA === null) {
     const f27 = asNum(revRow.fy27e, null);
-    revA = f27 !== null && 1 + g27 / 100 !== 0 ? f27 / (1 + g27 / 100) : 0;
+    const seedG = asNum(report.financials?.assumptions?.revenue_growth?.fy27, 0);
+    revA = f27 !== null && 1 + seedG / 100 !== 0 ? f27 / (1 + seedG / 100) : 0;
   }
 
   const em27 = asNum(e.ebitda_margin_fy27, 0), em28 = asNum(e.ebitda_margin_fy28, 0);
   const nm27 = asNum(e.net_margin_fy27, 0), nm28 = asNum(e.net_margin_fy28, 0);
-  const cmp = asNum(e.cmp, asNum(inputs.cmp, 0));
+  const cmp = Math.max(0, asNum(e.cmp, asNum(inputs.cmp, 0))); // a price can't be negative
   const shares = asNum(inputs.shares_out_cr, 0), netDebt = asNum(inputs.net_debt_cr, 0);
 
   const rev27 = revA * (1 + g27 / 100);
@@ -566,6 +575,37 @@ function artifactValues(report) {
     pat: yrs("pat"),
     net_margin_pct: yrs("net_margin_pct"),
     valuation: { cmp: asNum(inputs.cmp, 0), marketCap: mc, ev: mc + asNum(inputs.net_debt_cr, 0), pe: val.pe ?? {}, ev_ebitda: val.ev_ebitda ?? {}, price_sales: val.price_sales ?? {} },
+  };
+}
+
+const OPERATING_LEVERS = ["growth_fy27", "growth_fy28", "ebitda_margin_fy27", "ebitda_margin_fy28", "net_margin_fy27", "net_margin_fy28"];
+
+/**
+ * The values to DISPLAY for the given edit state — separates the earnings model from the price lever:
+ *   • nothing edited      → the validated artifact (rows + stored report.valuation), exact.
+ *   • CMP only            → earnings stay the artifact; only market cap / EV / multiples re-value
+ *                           (pure price sensitivity — no earnings remodel).
+ *   • an operating lever  → earnings recompute via computeModel; multiples follow.
+ */
+export function displayModel(report, current, seed) {
+  const opEdited = OPERATING_LEVERS.some((k) => current[k] !== seed[k]);
+  const cmpEdited = current.cmp !== seed.cmp;
+  const earn = opEdited ? computeModel(report, current) : artifactValues(report);
+  if (!opEdited && !cmpEdited) return earn; // exact artifact
+
+  const inputs = report.meta?.inputs ?? {};
+  const shares = asNum(inputs.shares_out_cr, 0), netDebt = asNum(inputs.net_debt_cr, 0);
+  const cmp = Math.max(0, asNum(current.cmp, asNum(inputs.cmp, 0))); // a price can't be negative
+  const marketCap = cmp * shares, ev = marketCap + netDebt;
+  const ratio = (n, d) => (typeof d === "number" && d > 0 ? n / d : null);
+  return {
+    revenue: earn.revenue, ebitda: earn.ebitda, ebitda_margin_pct: earn.ebitda_margin_pct, pat: earn.pat, net_margin_pct: earn.net_margin_pct,
+    valuation: {
+      marketCap, ev,
+      pe: { fy27e: ratio(marketCap, earn.pat.fy27e), fy28e: ratio(marketCap, earn.pat.fy28e) },
+      ev_ebitda: { fy27e: ratio(ev, earn.ebitda.fy27e), fy28e: ratio(ev, earn.ebitda.fy28e) },
+      price_sales: { fy27e: ratio(marketCap, earn.revenue.fy27e), fy28e: ratio(marketCap, earn.revenue.fy28e) },
+    },
   };
 }
 
@@ -677,7 +717,7 @@ function valuationSection(report) {
       <label class="flex flex-col gap-1">
         <span class="text-xs font-semibold text-slate-500">What-if price (CMP)</span>
         <span class="inline-flex items-center gap-1"><span class="text-slate-400">₹</span>
-          <input type="number" step="1" inputmode="decimal" data-lever="cmp" value="${escapeHtml(String(seed.cmp))}" class="w-28 rounded-lg border border-slate-200 px-2 py-1 text-sm font-mono text-slate-800 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100" />
+          <input type="number" step="1" min="0" inputmode="decimal" data-lever="cmp" value="${escapeHtml(String(seed.cmp))}" class="w-28 rounded-lg border border-slate-200 px-2 py-1 text-sm font-mono text-slate-800 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100" />
         </span>
       </label>
       <div><div class="text-xs text-slate-500">Market cap</div><div class="font-mono text-slate-800">₹<span data-out="marketcap">${fmtCr0(m.valuation.marketCap)}</span>cr</div></div>
@@ -720,9 +760,9 @@ export function hydrateModel(report, root) {
 
   function render() {
     const edited = Object.keys(seed).some((k) => current[k] !== seed[k]);
-    // Unedited → show the validated artifact (reconciles with the report JSON);
-    // edited → show the live recompute.
-    const m = edited ? computeModel(report, current) : artifactValues(report);
+    // displayModel handles the three states: unedited → validated artifact; CMP-only → price
+    // re-value on artifact earnings; operating edit → full live recompute.
+    const m = displayModel(report, current, seed);
     ["revenue", "ebitda", "pat"].forEach((k) => {
       set(`[data-out="${k}-fy27e"]`, fmtCr0(m[k].fy27e));
       set(`[data-out="${k}-fy28e"]`, fmtCr0(m[k].fy28e));
@@ -748,7 +788,8 @@ export function hydrateModel(report, root) {
     el.addEventListener("input", () => {
       const key = el.getAttribute("data-lever");
       const v = parseFloat(el.value);
-      if (Number.isFinite(v)) current[key] = v; // else ignore → keep last valid
+      // Ignore non-numeric (keep last valid); reject negative CMP (a price can't be < 0).
+      if (Number.isFinite(v) && !(key === "cmp" && v < 0)) current[key] = v;
       render();
     });
   });
