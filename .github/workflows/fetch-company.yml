@@ -1,16 +1,19 @@
-# Munshot — fetch-company (Steps 6 + 7 test harness)
+# Munshot — fetch-company (Steps 6–8 test harness)
 # ---------------------------------------------------------------------------
-# Owner-run: Actions → "fetch-company" → Run workflow. Fetches ONE company's real
-# snapshot + FY26 actuals + latest concall transcript/PPT (Step 6), then — unless
-# run_extract is unchecked — runs the LLM extractor (Step 7) to write report.json
-# Sections B + C. Uploads pipeline/out/** (bundle + report.json) as an artifact to
-# download and inspect. No KV, no repo dispatch, no report committed back.
+# Owner-run: Actions → "fetch-company" → Run workflow. Chains, per its toggles:
+#   fetch (Step 6) → extract B+C (Step 7) → web risks + thesis (Step 8a)
+#   → second-model verification (Step 8b)
+# Uploads pipeline/out/** (bundle + report.json + verification.json) as an artifact
+# to download and inspect. No KV, no repo dispatch, no report committed back.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   SCREENER_EMAIL, SCREENER_PASSWORD, FIRECRAWL_API_KEY, SCRAPEDO_API_KEY  (Step 6)
-#   OPENAI_API_KEY                                                          (Step 7)
-# Optional repo variable (Settings → Variables → Actions):
-#   OPENAI_MODEL  — overrides the default model constant in pipeline/lib/openai.mjs
+#   OPENAI_API_KEY                                                    (Steps 7, 8)
+# Optional repo secret (a stronger, INDEPENDENT cross-provider verification):
+#   ANTHROPIC_API_KEY  — when set, Step 8b's audit runs on a different model family
+# Optional repo variables (Settings → Variables → Actions):
+#   OPENAI_MODEL  — overrides the extraction/research model (pipeline/lib/openai.mjs)
+#   VERIFY_MODEL  — overrides the verification model (defaults to a different model)
 # ---------------------------------------------------------------------------
 
 name: fetch-company
@@ -25,6 +28,16 @@ on:
         type: string
       run_extract:
         description: "Run the LLM extractor (Step 7) after fetch"
+        required: false
+        default: true
+        type: boolean
+      run_research:
+        description: "Run web risks + thesis (Step 8a) after extract"
+        required: false
+        default: true
+        type: boolean
+      run_verify:
+        description: "Run the second-model verification pass (Step 8b)"
         required: false
         default: true
         type: boolean
@@ -43,10 +56,12 @@ jobs:
         with:
           node-version: "22"
 
-      # Offline unit tests for the Step 7 extractor (pure JS, no deps, no OpenAI).
-      # Fails fast if prompt-building / assembly / source-tagging / validation regress.
-      - name: Test extractor (offline)
-        run: node pipeline/test/extract.test.mjs
+      # Offline unit tests (pure JS, no deps, no network, no LLM). Fail fast if any of
+      # prompt-building / assembly / source-tagging / falsifier + verifier logic regress.
+      - name: Test pipeline (offline)
+        run: |
+          node pipeline/test/extract.test.mjs
+          node pipeline/test/research.test.mjs
 
       # No-save install (deps are NOT committed — see pipeline/BUNDLE.md).
       - name: Install deps (no-save) + Chromium
@@ -73,6 +88,29 @@ jobs:
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           COMPANY: ${{ inputs.company }}
         run: node pipeline/extract-concall.mjs "$COMPANY"
+
+      # Step 8a: web-grounded C.6 risks + Section D thesis / anti-thesis. Uses OpenAI web_search
+      # (Firecrawl search as fallback). Augments the same report.json.
+      - name: Research risks + thesis (Step 8a)
+        if: ${{ inputs.run_research }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+          COMPANY: ${{ inputs.company }}
+        run: node pipeline/research-concall.mjs "$COMPANY"
+
+      # Step 8b: second-model verification of Step 7's transcript claims. Writes verification.json
+      # and prunes clear hallucinations from report.json. ANTHROPIC_API_KEY (optional) makes it a
+      # true cross-provider check; otherwise it uses a different OpenAI model.
+      - name: Verify extraction (Step 8b)
+        if: ${{ inputs.run_verify }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          VERIFY_MODEL: ${{ vars.VERIFY_MODEL }}
+          COMPANY: ${{ inputs.company }}
+        run: node pipeline/verify-extract.mjs "$COMPANY"
 
       - name: Upload bundle artifact
         if: always()

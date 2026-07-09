@@ -49,3 +49,13 @@ Each item: what's currently under-constrained, and the intended fix.
   stable ids). `uniqueItems` already blocks exact-duplicate rows; the pipeline will assert
   one-row-per-key in code. Reshaping to an object would complicate both the renderer and the
   editable model for no real gain. This is a deliberate decision, not an oversight.
+- [x] ~~**Add a `url` field to `concall.risks[]` for Step 8 web citations**~~ — **Won't do (no
+  schema change).** A risk's citation URL is embedded at the END of the `risk` string as
+  `(Source: <URL>)`, so the schema's `{risk, type, source:"Web"}` shape is unchanged and the
+  renderer can already show the link inline. Adding a structured `url` field is a future nicety,
+  not a correctness gap.
+- [x] **`thesis[]` / `anti_thesis[]` — `falsifier` must be non-empty.** JSON Schema `required`
+  only asserts the key is present, not that the string is non-empty. Rather than contort the
+  schema, Step 8 enforces this in **code**: `research-assemble.mjs` DROPS any D point with a blank
+  falsifier at assembly, and `validateResearch` additionally raises a hard error on any empty
+  falsifier that slips through. Covered by `pipeline/test/research.test.mjs`.

@@ -1,0 +1,8 @@
+{
+  "provider": "openai_web_search",
+  "citations": [
+    { "url": "https://www.bseindia.com/xml-data/corpfiling/AttachHis/navin-gst.pdf", "title": "Navin Fluorine — GST demand disclosure", "query": "Navin Fluorine pending litigation" },
+    { "url": "https://www.icra.in/Rationale/ShowRationaleReport?Id=98231", "title": "ICRA rationale — Navin Fluorine", "query": "Navin Fluorine credit rating" }
+  ],
+  "context": "### QUERY: Navin Fluorine pending litigation OR court case\nNavin Fluorine disclosed a pending GST demand of approximately Rs 120 crore now under appeal before the CESTAT; an adverse order could affect FY27 cash flows.\nSOURCES: https://www.bseindia.com/xml-data/corpfiling/AttachHis/navin-gst.pdf\n\n### QUERY: Navin Fluorine credit rating CRISIL OR ICRA OR CARE\nICRA reaffirmed the long-term rating but flagged the debt-funded cGMP-4 capex peak as a monitorable for FY27.\nSOURCES: https://www.icra.in/Rationale/ShowRationaleReport?Id=98231\n\n### QUERY: Navin Fluorine Chemicals competition OR new capacity\nMultiple Indian fluorochemical players are adding CDMO and R32 capacity, raising the risk of pricing pressure over FY27-28.\nSOURCES: https://www.business-standard.com/companies/navin-fluorine-capacity"
+}

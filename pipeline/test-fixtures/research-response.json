@@ -1,0 +1,17 @@
+{
+  "risks": [
+    { "risk": "Pending GST demand of ~Rs 120 cr under appeal before the CESTAT; an adverse ruling would dent FY27 cash flows. (Source: https://www.bseindia.com/xml-data/corpfiling/AttachHis/navin-gst.pdf)", "type": "Litigation" },
+    { "risk": "ICRA flagged the debt-funded cGMP-4 capex peak as a monitorable in its latest rationale. (Source: https://www.icra.in/Rationale/ShowRationaleReport?Id=98231)", "type": "Rating action" }
+  ],
+  "thesis": [
+    { "point": "CDMO mix shift structurally lifts blended EBITDA margins toward the mid-20s as high-value molecules ramp.", "falsifier": "Blended EBITDA margin stays below 22% through FY27 despite cGMP-4 ramping.", "source": "Web" },
+    { "point": "cGMP-4 commissioning roughly doubles high-value capacity, underwriting multi-year revenue growth.", "falsifier": "cGMP-4 utilisation stalls below 50% two years after commissioning.", "source": "Est." },
+    { "point": "The R32 headwind is cyclical and laps by H2 FY27, restoring the refrigerants contribution.", "falsifier": "R32 realisations remain depressed into FY28 with no volume offset.", "source": "Web" },
+    { "point": "Marquee innovator relationships create high switching costs and durable pricing power.", "falsifier": "", "source": "Est." }
+  ],
+  "anti_thesis": [
+    { "point": "Net debt peaks on the capex cycle; a demand air-pocket would strain the balance sheet.", "falsifier": "Net debt / EBITDA exceeds 3x at any point in FY27.", "source": "Web" },
+    { "point": "Chinese oversupply in fluorochemicals could extend pricing pressure beyond refrigerants.", "falsifier": "Specialty-chemicals gross margin compresses more than 300 bps YoY in FY27.", "source": "Web" },
+    { "point": "Execution risk on the cGMP-4 ramp given the historical lumpiness of CDMO revenue.", "falsifier": "cGMP-4 commercial supply slips beyond H1 FY28.", "source": "Est." }
+  ]
+}

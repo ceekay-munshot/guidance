@@ -1,0 +1,14 @@
+{
+  "verdicts": [
+    { "ref": "guidance[0]", "category": "guidance", "claim": "Revenue growth (FY27) — ~20%", "verdict": "supported", "confidence": "high", "note": "Management explicitly guided to roughly 20% revenue growth in FY27." },
+    { "ref": "guidance[1]", "category": "guidance", "claim": "EBITDA margin (FY27) — ~25%", "verdict": "supported", "confidence": "high", "note": "Transcript states a ~25% EBITDA margin target for FY27." },
+    { "ref": "guidance[2]", "category": "guidance", "claim": "Capex (FY27) — Rs 650-700 cr", "verdict": "supported", "confidence": "high", "note": "FY27 capex of Rs 650-700 crore for cGMP-4 confirmed on the call." },
+    { "ref": "guidance[3]", "category": "guidance", "claim": "Dividend (FY27) — Rs 50/share", "verdict": "unsupported", "confidence": "high", "note": "No mention of any dividend, let alone Rs 50/share, anywhere in the transcript." },
+    { "ref": "expansion_flags[0]", "category": "expansion_flag", "claim": "cGMP capacity: yoy +40%, qoq +18%", "verdict": "supported", "confidence": "high", "note": "cGMP capacity stated up ~40% YoY and 18% QoQ on the Dahej cGMP-4 block." },
+    { "ref": "about.revenue_mix[0]", "category": "about", "claim": "Revenue mix: cGMP (CDMO) ≈ 35%", "verdict": "partial", "confidence": "medium", "note": "Transcript notes CDMO leadership but gives no explicit 35% figure." },
+    { "ref": "about.revenue_mix[1]", "category": "about", "claim": "Revenue mix: High Performance Products ≈ 25%", "verdict": "partial", "confidence": "low", "note": "No explicit HPP revenue share stated on the call." },
+    { "ref": "about.revenue_mix[2]", "category": "about", "claim": "Revenue mix: Specialty Chemicals ≈ 40%", "verdict": "partial", "confidence": "low", "note": "No explicit specialty-chemicals share stated on the call." },
+    { "ref": "about.margin_by_segment[0]", "category": "about", "claim": "Segment EBITDA margin: cGMP (CDMO) = 30", "verdict": "partial", "confidence": "medium", "note": "CDMO margins implied to be high but 30% not stated verbatim." },
+    { "ref": "about.margin_by_segment[1]", "category": "about", "claim": "Segment EBITDA margin: High Performance Products = not disclosed", "verdict": "supported", "confidence": "high", "note": "HPP margin not disclosed, consistent with the transcript's silence on it." }
+  ]
+}
