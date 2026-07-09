@@ -54,8 +54,12 @@ async function main() {
       const path = await findReportJson();
       if (!path) { log.err(`no report.json under pipeline/out/ to publish for "${slug}"`); process.exitCode = 1; return; }
       const content = await readFile(path, "utf8");
+      // Stamp the report's own generated_at onto the done status so the Worker only serves the report
+      // once it has propagated past KV's eventual-consistency lag (see handleReport's done gate).
+      let generated_at = null;
+      try { generated_at = JSON.parse(content)?.meta?.generated_at || null; } catch { /* keep null */ }
       await kvPut(`report:${slug}`, content);
-      await kvPut(`status:${slug}`, JSON.stringify({ state: "done", updated_at: new Date().toISOString(), message: "Report ready." }));
+      await kvPut(`status:${slug}`, JSON.stringify({ state: "done", updated_at: new Date().toISOString(), generated_at, message: "Report ready." }));
       log.ok(`KV report:${slug} published (${content.length} bytes) → status done`);
     } else {
       log.err(`unknown command "${cmd}"`); process.exitCode = 1;

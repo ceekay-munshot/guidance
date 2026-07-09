@@ -24,8 +24,10 @@
 
 const WORKFLOW_FILE = "fetch-company.yml"; // the Action to dispatch (must accept `company` + `slug`)
 const FRESH_DAYS = 14;                      // a report newer than this is served from cache, not re-run
-const STALE_STATUS_MS = 15 * 60 * 1000;     // a run is ~1-2 min; a queued/running status older than this
-                                            // is presumed stuck (cancelled run, missed error step) and re-dispatchable
+const STALE_STATUS_MS = 25 * 60 * 1000;     // MUST exceed the workflow's timeout-minutes (20) so a legitimately
+                                            // long run is never marked stale mid-flight (which would let a retry
+                                            // re-dispatch and cancel-in-progress kill the near-done original). A
+                                            // status older than this is presumed stuck (crash/missed error step).
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -154,12 +156,16 @@ async function handleAnalyze(env, request) {
   const force = body.force === true;
 
   const [report, status] = await Promise.all([kvJson(env, `report:${slug}`), kvJson(env, `status:${slug}`)]);
+  const reportT = report && report.meta && report.meta.generated_at ? Date.parse(report.meta.generated_at) : -Infinity;
+  const statusT = status && status.updated_at ? Date.parse(status.updated_at) : -Infinity;
+  const inFlightFresh = isInFlight(status) && !isStatusStale(status);
+  const newerError = status && status.state === "error" && statusT > reportT; // a failed refresh after the cached report
 
-  if (report && isFresh(report) && !force) return json({ ok: true, slug, status: "done" });
+  // Serve the fresh cache ONLY if nothing newer is pending — otherwise a failed/in-flight refresh
+  // would be masked by the stale report and "Try again" could never start a replacement.
+  if (report && isFresh(report) && !force && !newerError && !inFlightFresh) return json({ ok: true, slug, status: "done" });
   // A live run blocks a duplicate dispatch — but a stuck (stale) status, or an explicit force, re-runs.
-  if (isInFlight(status) && !isStatusStale(status) && !force) {
-    return json({ ok: true, slug, status: status.state, message: status.message });
-  }
+  if (inFlightFresh && !force) return json({ ok: true, slug, status: status.state, message: status.message });
 
   if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) {
     return json({ ok: false, status: "error", error: "analysis is not configured on the server" }, 503);
@@ -187,12 +193,20 @@ async function handleReport(env, request, url) {
 
   const [report, status] = await Promise.all([kvJson(env, `report:${slug}`), kvJson(env, `status:${slug}`)]);
   if (isInFlight(status) && !isStatusStale(status)) return json({ ok: true, slug, status: status.state, message: status.message });
-  // A failure from a run AFTER the stored report was generated wins — don't hide a failed refresh
-  // behind a stale cached report.
+
   const reportT = report && report.meta && report.meta.generated_at ? Date.parse(report.meta.generated_at) : -Infinity;
   const statusT = status && status.updated_at ? Date.parse(status.updated_at) : -Infinity;
+  // A failure from a run AFTER the stored report was generated wins — don't hide a failed refresh.
   if (status && status.state === "error" && statusT > reportT) return json({ ok: false, slug, status: "error", error: status.message || "Analysis failed." });
-  if (report) return json({ ok: true, slug, status: "done", report });
+  // A done status carries the report's generated_at. Accept the report as the completed run ONLY once
+  // that report has actually propagated (Workers KV is eventually consistent — the new report can lag
+  // its own done status). Until then keep the client polling rather than render an older cached report.
+  const doneAt = status && status.state === "done" && status.generated_at ? Date.parse(status.generated_at) : NaN;
+  if (Number.isFinite(doneAt)) {
+    if (report && reportT >= doneAt) return json({ ok: true, slug, status: "done", report });
+    return json({ ok: true, slug, status: "running", message: "Finishing up…" });
+  }
+  if (report) return json({ ok: true, slug, status: "done", report }); // report with no done-status to gate on
   if (status && status.state === "error") return json({ ok: false, slug, status: "error", error: status.message || "Analysis failed." });
   return json({ ok: false, slug, status: "unknown" });
 }

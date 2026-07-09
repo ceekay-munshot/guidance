@@ -49,8 +49,8 @@ stubDispatchOk();
 // ── helpers ──
 ok(SLUG === "navin-fluorine", "slugify derives the KV key from the company name");
 ok(__test.isFresh(freshReport) && !__test.isFresh(staleReport), "isFresh: recent true, old false");
-ok(__test.isStatusStale({ state: "running", updated_at: agoIso(20 * 60 * 1000) }) === true, "isStatusStale: 20-min-old status is stale");
-ok(__test.isStatusStale({ state: "running", updated_at: nowIso() }) === false, "isStatusStale: just-updated status is fresh");
+ok(__test.isStatusStale({ state: "running", updated_at: agoIso(30 * 60 * 1000) }) === true, "isStatusStale: 30-min-old status is stale (> 25-min cutoff)");
+ok(__test.isStatusStale({ state: "running", updated_at: agoIso(18 * 60 * 1000) }) === false, "isStatusStale: 18-min run (< 20-min job timeout) is NOT stale");
 
 // ── analyze: cold start → queued + one dispatch under the DERIVED slug ──
 dispatches = [];
@@ -86,8 +86,19 @@ ok(body.status === "running" && dispatches.length === 0, "fresh in-flight job �
 
 // ── analyze: STALE in-flight job → re-dispatches (stuck-run recovery) ──
 dispatches = [];
-body = await (await post(makeEnv({ kv: { [`status:${SLUG}`]: j({ state: "queued", updated_at: agoIso(20 * 60 * 1000) }) } }), "/api/analyze", { company: CO })).json();
+body = await (await post(makeEnv({ kv: { [`status:${SLUG}`]: j({ state: "queued", updated_at: agoIso(30 * 60 * 1000) }) } }), "/api/analyze", { company: CO })).json();
 ok(body.status === "queued" && dispatches.length === 1, "stale in-flight job → re-dispatches (not stuck forever)");
+
+// ── analyze: fresh report + a NEWER failed refresh → re-dispatches (Try again escapes) ──
+dispatches = [];
+const recentRpt = { meta: { slug: SLUG, generated_at: agoIso(60 * 1000) } };
+body = await (await post(makeEnv({ kv: { [`report:${SLUG}`]: j(recentRpt), [`status:${SLUG}`]: j({ state: "error", updated_at: nowIso(), message: "failed" }) } }), "/api/analyze", { company: CO })).json();
+ok(body.status === "queued" && dispatches.length === 1, "fresh report + newer error → re-dispatches (not masked by cache)");
+
+// ── analyze: fresh report + an OLD error → still served from cache ──
+dispatches = [];
+body = await (await post(makeEnv({ kv: { [`report:${SLUG}`]: j(freshReport), [`status:${SLUG}`]: j({ state: "error", updated_at: agoIso(60 * 60 * 1000), message: "old" }) } }), "/api/analyze", { company: CO })).json();
+ok(body.status === "done" && dispatches.length === 0, "fresh report + old error → served from cache");
 
 // ── analyze: force bypasses freshness AND a live status ──
 dispatches = [];
@@ -114,8 +125,18 @@ body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j(freshReport), [`st
 ok(body.status === "running", "fresh in-flight run wins over an existing report (client keeps polling)");
 
 // but a STALE in-flight status must not hide a usable report forever
-body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j(freshReport), [`status:${SLUG}`]: j({ state: "running", updated_at: agoIso(20 * 60 * 1000) }) } }), `/api/report?slug=${SLUG}`)).json();
+body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j(freshReport), [`status:${SLUG}`]: j({ state: "running", updated_at: agoIso(30 * 60 * 1000) }) } }), `/api/report?slug=${SLUG}`)).json();
 ok(body.status === "done" && body.report, "stale in-flight status falls back to serving the report");
+
+// done-status gate (KV eventual consistency): only accept the report once it has caught up
+const T = nowIso();
+const doneStatus = j({ state: "done", updated_at: T, generated_at: T });
+body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j({ meta: { slug: SLUG, generated_at: T } }), [`status:${SLUG}`]: doneStatus } }), `/api/report?slug=${SLUG}`)).json();
+ok(body.status === "done" && body.report, "done + report caught up to generated_at → done");
+body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j(staleReport), [`status:${SLUG}`]: doneStatus } }), `/api/report?slug=${SLUG}`)).json();
+ok(body.status === "running", "done status but only an OLD report readable (KV lag) → keep polling (no stale render)");
+body = await (await get(makeEnv({ kv: { [`status:${SLUG}`]: doneStatus } }), `/api/report?slug=${SLUG}`)).json();
+ok(body.status === "running", "done status but report not yet visible (first-run lag) → keep polling");
 
 // a failed refresh NEWER than the cached report surfaces the error (doesn't hide behind stale data)
 body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j(staleReport), [`status:${SLUG}`]: j({ state: "error", updated_at: nowIso(), message: "run failed" }) } }), `/api/report?slug=${SLUG}`)).json();

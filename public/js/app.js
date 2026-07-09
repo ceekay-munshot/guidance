@@ -357,6 +357,9 @@ async function renderDemo() {
     const res = await fetch("/data/sample-report.json");
     if (!res.ok) return;
     const sample = await res.json();
+    // The sample fetch is async — if the user already started a run (or one rendered) while it loaded,
+    // don't clobber the live UI with the demo.
+    if (state.running || runToken !== 0 || els.reportRoot.innerHTML.trim()) return;
     const banner = `
       <div class="fade-in mb-4 rounded-xl bg-indigo-50/70 text-indigo-700 ring-1 ring-inset ring-indigo-100 px-4 py-2 text-xs flex items-center gap-2">
         <i data-lucide="sparkles" class="w-4 h-4"></i>
