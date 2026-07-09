@@ -1,15 +1,18 @@
-// report.js — read-only report renderer (STEPS 3–4).
-// Pure: takes the loaded report object and returns an HTML string. Renders strictly
-// from report.schema.json's shape. ALL rendered strings are escaped — the data will be
-// LLM-generated later, so treat it as untrusted.
+// report.js — report renderer (STEPS 3–5).
+// renderReport(report) → HTML string. Renders strictly from report.schema.json's shape.
+// ALL rendered strings are escaped — the data will be LLM-generated later, so untrusted.
 //
-// Built: header strip, Key Takeaways (hero), B (about), C.1 guidance, C.2 themes,
-// C.3 expansion flags, C.4 thesis-triggers  [Step 3]; C.5 classification, C.6 risks,
-// C.7 management tone, C.8 analyst tone, D thesis/anti-thesis, G conviction  [Step 4].
-// Only E (financial model) and F (valuation) remain "coming next" — Step 5's interactive core.
+// Built: header, Key Takeaways, B about, C.1 guidance, C.2 themes, C.3 expansion flags,
+// C.4 thesis-triggers [Step 3]; C.5 classification, C.6 risks, C.7 management tone,
+// C.8 analyst tone, D thesis/anti-thesis, G conviction [Step 4]; E editable financial
+// model + F live valuation [Step 5]. The whole client-facing report is now complete.
+//
+// Step 5 is interactive: renderReport() emits the initial (seed) state, then app.js calls
+// hydrateModel(report, rootEl) to wire the assumption inputs. computeModel(report, edits)
+// is the PURE, deterministic recompute (unit-tested) — it keys off each row's `key`+`unit`,
+// never the display label.
 //
 // Reusable helpers: sourceTag(), stancePill(), toneBadge(), chip(), sectionCard(), table().
-// Keep them small and composable.
 
 import { escapeHtml } from "./ui.js";
 
@@ -75,16 +78,6 @@ function table(headers, rows) {
 }
 
 const empty = (msg = "—") => `<p class="text-sm text-slate-400">${escapeHtml(msg)}</p>`;
-
-/** Light "coming next" placeholder for sections not built yet (no fake content). */
-function comingNext(label) {
-  return `
-  <div class="fade-in mb-3 flex items-center gap-2 rounded-xl border border-dashed border-slate-200 px-4 py-3 text-slate-400">
-    <i data-lucide="chevron-right" class="w-4 h-4"></i>
-    <span class="font-medium text-sm">${escapeHtml(label)}</span>
-    <span class="text-xs">— coming next</span>
-  </div>`;
-}
 
 // ── 1 · header strip ────────────────────────────────────────────────────────
 function headerStrip(report) {
@@ -480,6 +473,258 @@ function convictionSection(report) {
   </section>`;
 }
 
+// ── E/F financial model — pure recompute + seed ──────────────────────────────
+const asNum = (v, fb) => (typeof v === "number" && isFinite(v) ? v : fb);
+const fmtCr0 = (v) => (typeof v === "number" && isFinite(v) ? Math.round(v).toLocaleString("en-IN") : "—");
+const fmt1 = (v) => (typeof v === "number" && isFinite(v) ? v.toFixed(1) : "—");
+const fmtMult = (v) => (typeof v === "number" && isFinite(v) ? `${v.toFixed(1)}x` : "n.m."); // null/±Inf/NaN → n.m.
+
+/** Rows the model recomputes; the rest (gross_margin_pct, adj_ebitda_margin_pct) are display-only. */
+const MODEL_COMPUTED = new Set(["revenue", "ebitda", "ebitda_margin_pct", "pat", "net_margin_pct"]);
+
+const rowByKey = (report, key) => (report.financials?.rows ?? []).find((r) => r.key === key) || {};
+
+/** Seed the editable levers from assumptions + the FY27/FY28 row values + inputs.cmp. */
+function seedEdits(report) {
+  const a = report.financials?.assumptions ?? {};
+  const inputs = report.meta?.inputs ?? {};
+  const em = rowByKey(report, "ebitda_margin_pct");
+  const nm = rowByKey(report, "net_margin_pct");
+  return {
+    growth_fy27: asNum(a.revenue_growth?.fy27, 0),
+    growth_fy28: asNum(a.revenue_growth?.fy28, 0),
+    ebitda_margin_fy27: asNum(em.fy27e, asNum(a.margin?.fy27, 0)),
+    ebitda_margin_fy28: asNum(em.fy28e, asNum(a.margin?.fy28, 0)),
+    net_margin_fy27: asNum(nm.fy27e, 0),
+    net_margin_fy28: asNum(nm.fy28e, 0),
+    cmp: asNum(inputs.cmp, 0),
+  };
+}
+
+/**
+ * PURE deterministic recompute. Returns the forecast rows + valuation for the given edits.
+ * Keys off row `key` (never labels). Guardrails: a multiple with denominator ≤ 0 → null (→ "n.m.").
+ */
+export function computeModel(report, edits) {
+  const e = edits || {};
+  const inputs = report.meta?.inputs ?? {};
+  const revA = asNum(rowByKey(report, "revenue").fy26a, 0);
+
+  const g27 = asNum(e.growth_fy27, 0), g28 = asNum(e.growth_fy28, 0);
+  const em27 = asNum(e.ebitda_margin_fy27, 0), em28 = asNum(e.ebitda_margin_fy28, 0);
+  const nm27 = asNum(e.net_margin_fy27, 0), nm28 = asNum(e.net_margin_fy28, 0);
+  const cmp = asNum(e.cmp, asNum(inputs.cmp, 0));
+  const shares = asNum(inputs.shares_out_cr, 0), netDebt = asNum(inputs.net_debt_cr, 0);
+
+  const rev27 = revA * (1 + g27 / 100);
+  const rev28 = rev27 * (1 + g28 / 100);
+  const eb27 = (rev27 * em27) / 100, eb28 = (rev28 * em28) / 100;
+  const pat27 = (rev27 * nm27) / 100, pat28 = (rev28 * nm28) / 100;
+
+  const marketCap = cmp * shares;
+  const ev = marketCap + netDebt;
+  const ratio = (n, d) => (typeof d === "number" && d > 0 ? n / d : null); // ≤0 denominator → n.m.
+
+  return {
+    revenue: { fy26a: revA, fy27e: rev27, fy28e: rev28 },
+    ebitda: { fy27e: eb27, fy28e: eb28 },
+    ebitda_margin_pct: { fy27e: em27, fy28e: em28 },
+    pat: { fy27e: pat27, fy28e: pat28 },
+    net_margin_pct: { fy27e: nm27, fy28e: nm28 },
+    valuation: {
+      cmp, marketCap, ev,
+      pe: { fy27e: ratio(marketCap, pat27), fy28e: ratio(marketCap, pat28) },
+      ev_ebitda: { fy27e: ratio(ev, eb27), fy28e: ratio(ev, eb28) },
+      price_sales: { fy27e: ratio(marketCap, rev27), fy28e: ratio(marketCap, rev28) },
+    },
+  };
+}
+
+/** [mgmt guidance] vs [Est.] basis tag — derived from whether management guided the metric on the call. */
+function leverBasis(report, keywords) {
+  const g = report.concall?.guidance ?? [];
+  const hit = g.find(
+    (x) => (x.source === "Transcript" || x.source === "PPT") && keywords.some((k) => String(x.metric || "").toLowerCase().includes(k))
+  );
+  return hit ? "mgmt guidance" : "Est.";
+}
+function basisPill(kind) {
+  const mgmt = kind === "mgmt guidance";
+  const cls = mgmt ? "bg-blue-50 text-blue-700 ring-blue-200" : "bg-slate-100 text-slate-600 ring-slate-200";
+  return `<span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset ${cls} whitespace-nowrap">${escapeHtml(mgmt ? "mgmt guidance" : "Est.")}</span>`;
+}
+function levInput(key, val, yr, unit) {
+  const suffix = unit === "%" ? `<span class="text-slate-400 text-xs">%</span>` : "";
+  return `<label class="inline-flex items-center gap-1 text-xs text-slate-500">
+    <span>${escapeHtml(yr)}</span>
+    <input type="number" step="0.1" inputmode="decimal" data-lever="${escapeHtml(key)}" value="${escapeHtml(String(val))}"
+      class="w-20 rounded-lg border border-slate-200 px-2 py-1 text-sm font-mono text-slate-800 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100" />${suffix}
+  </label>`;
+}
+
+// ── E · editable financial model ─────────────────────────────────────────────
+function financialModelSection(report) {
+  const rows = report.financials?.rows ?? [];
+  if (!rows.length) return sectionCard("E · Financial model (₹ Cr)", empty("No financial model."));
+  const seed = seedEdits(report);
+  const m = computeModel(report, seed);
+  const compSrc = { revenue: m.revenue, ebitda: m.ebitda, ebitda_margin_pct: m.ebitda_margin_pct, pat: m.pat, net_margin_pct: m.net_margin_pct };
+
+  // A forecast cell: computed rows get a data-out hook + live value; display-only rows show baseline.
+  const cell = (row, yr) => {
+    const isPct = row.unit === "pct";
+    const fmt = isPct ? fmt1 : fmtCr0;
+    const suf = isPct ? `<span class="text-slate-400">%</span>` : "";
+    if (MODEL_COMPUTED.has(row.key)) {
+      return `<span data-out="${row.key}-${yr}" class="font-mono text-slate-800">${fmt(compSrc[row.key][yr])}</span>${suf}`;
+    }
+    const v = row[yr];
+    const has = typeof v === "number" && isFinite(v);
+    return `<span class="font-mono text-slate-400">${has ? fmt(v) : "—"}</span>${has ? suf : ""}`;
+  };
+  const fy26 = (row) => {
+    const isPct = row.unit === "pct";
+    const v = row.fy26a;
+    const has = typeof v === "number" && isFinite(v);
+    return `<span class="font-mono text-slate-500">${has ? (isPct ? fmt1(v) : fmtCr0(v)) : "—"}</span>${has && isPct ? `<span class="text-slate-400">%</span>` : ""}`;
+  };
+  const tbl = table(
+    ["Metric", "FY26A", "FY27E", "FY28E", "Driver"],
+    rows.map((r) => [
+      `<span class="font-medium text-slate-800">${escapeHtml(dash(r.metric))}</span>`,
+      fy26(r),
+      cell(r, "fy27e"),
+      cell(r, "fy28e"),
+      `<span class="text-slate-500">${escapeHtml(dash(r.driver))}</span>`,
+    ])
+  );
+
+  const a = report.financials?.assumptions ?? {};
+  const lever = (label, k27, k28, basis) => `
+    <div class="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-4 py-2">
+      <div class="sm:w-52 flex items-center gap-2"><span class="text-sm font-medium text-slate-700">${escapeHtml(label)}</span>${basisPill(basis)}</div>
+      <div class="flex flex-wrap gap-3">${levInput(k27, seed[k27], "FY27E", "%")}${levInput(k28, seed[k28], "FY28E", "%")}</div>
+    </div>`;
+  const basisNotes = [a.revenue_growth?.basis && `Growth basis: ${a.revenue_growth.basis}`, a.margin?.basis && `Margin basis: ${a.margin.basis}`, a.note]
+    .filter(Boolean)
+    .map((t) => `<p class="text-xs text-slate-400">${escapeHtml(t)}</p>`)
+    .join("");
+  const assumptions = `
+    <div class="mt-6 rounded-2xl bg-slate-50 ring-1 ring-inset ring-slate-100 p-4 sm:p-5">
+      <div class="flex items-center gap-2 mb-2">
+        <i data-lucide="sliders-horizontal" class="w-4 h-4 text-indigo-600"></i>
+        <h4 class="font-semibold text-slate-700">Assumptions <span class="font-normal text-slate-400 text-sm">— edit to re-model</span></h4>
+      </div>
+      <div class="divide-y divide-slate-100">
+        ${lever("Revenue growth", "growth_fy27", "growth_fy28", leverBasis(report, ["revenue"]))}
+        ${lever("EBITDA margin", "ebitda_margin_fy27", "ebitda_margin_fy28", leverBasis(report, ["ebitda"]))}
+        ${lever("Net margin", "net_margin_fy27", "net_margin_fy28", leverBasis(report, ["net margin"]))}
+      </div>
+      <div class="mt-3 space-y-1">${basisNotes}</div>
+    </div>`;
+
+  const head = `
+    <div class="flex items-center justify-between gap-3 mb-4">
+      <h3 class="font-display text-lg font-bold flex items-center gap-2">
+        <span class="inline-block h-4 w-1 rounded-full" style="background:linear-gradient(180deg,#6366F1,#EC4899)"></span>
+        E · Financial model <span class="text-sm font-normal text-slate-400">(₹ Cr)</span>
+      </h3>
+      <div class="flex items-center gap-2">
+        <span data-model-edited class="hidden inline-flex items-center gap-1 rounded-full bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200 px-2 py-0.5 text-xs font-semibold"><i data-lucide="pencil" class="w-3 h-3"></i>edited</span>
+        <button type="button" data-model-reset class="hidden rounded-full ring-1 ring-inset ring-slate-200 text-slate-600 px-3 py-1 text-xs font-semibold hover:bg-slate-50">Reset</button>
+      </div>
+    </div>`;
+  return `<section class="card fade-in p-6 sm:p-8 mb-6">${head}${tbl}${assumptions}</section>`;
+}
+
+// ── F · live valuation ───────────────────────────────────────────────────────
+function valuationSection(report) {
+  const seed = seedEdits(report);
+  const m = computeModel(report, seed);
+  const priceLever = `
+    <div class="flex flex-wrap items-end gap-x-6 gap-y-3 mb-5">
+      <label class="flex flex-col gap-1">
+        <span class="text-xs font-semibold text-slate-500">What-if price (CMP)</span>
+        <span class="inline-flex items-center gap-1"><span class="text-slate-400">₹</span>
+          <input type="number" step="1" inputmode="decimal" data-lever="cmp" value="${escapeHtml(String(seed.cmp))}" class="w-28 rounded-lg border border-slate-200 px-2 py-1 text-sm font-mono text-slate-800 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100" />
+        </span>
+      </label>
+      <div><div class="text-xs text-slate-500">Market cap</div><div class="font-mono text-slate-800">₹<span data-out="marketcap">${fmtCr0(m.valuation.marketCap)}</span>cr</div></div>
+      <div><div class="text-xs text-slate-500">EV</div><div class="font-mono text-slate-800">₹<span data-out="ev">${fmtCr0(m.valuation.ev)}</span>cr</div></div>
+      <div class="text-xs text-slate-400 self-center">shares &amp; net debt fixed from inputs</div>
+    </div>`;
+  const vc = (name, yr, v) => `<span data-val="${name}-${yr}" class="font-mono font-medium text-slate-800">${fmtMult(v)}</span>`;
+  const valTbl = table(
+    ["Multiple", "FY27E", "FY28E"],
+    [
+      [`<span class="font-medium text-slate-800">P/E</span>`, vc("pe", "fy27e", m.valuation.pe.fy27e), vc("pe", "fy28e", m.valuation.pe.fy28e)],
+      [`<span class="font-medium text-slate-800">EV/EBITDA</span>`, vc("evebitda", "fy27e", m.valuation.ev_ebitda.fy27e), vc("evebitda", "fy28e", m.valuation.ev_ebitda.fy28e)],
+      [`<span class="font-medium text-slate-800">P/S</span>`, vc("ps", "fy27e", m.valuation.price_sales.fy27e), vc("ps", "fy28e", m.valuation.price_sales.fy28e)],
+    ]
+  );
+  const sanity = report.valuation?.sanity_check
+    ? `<div class="mt-4 rounded-xl bg-indigo-50/60 ring-1 ring-inset ring-indigo-100 p-4">
+         <div class="flex items-center gap-2 text-indigo-700 font-semibold text-sm mb-1"><i data-lucide="scale" class="w-4 h-4"></i>Sanity check</div>
+         <p class="text-sm text-slate-600 leading-relaxed">${escapeHtml(report.valuation.sanity_check)}</p>
+       </div>`
+    : "";
+  return sectionCard("F · Valuation", `${priceLever}${valTbl}${sanity}`);
+}
+
+/**
+ * Wire Section E's assumption inputs so E's rows and F's multiples recompute live.
+ * Call AFTER renderReport()'s HTML is mounted. No-ops if there's no model in the DOM.
+ */
+export function hydrateModel(report, root) {
+  if (!root) return;
+  const levers = Array.from(root.querySelectorAll("[data-lever]"));
+  if (!levers.length) return;
+  const seed = seedEdits(report);
+  const current = { ...seed };
+  const editedEl = root.querySelector("[data-model-edited]");
+  const resetEl = root.querySelector("[data-model-reset]");
+  const set = (sel, txt) => { const el = root.querySelector(sel); if (el) el.textContent = txt; };
+
+  function render() {
+    const m = computeModel(report, current);
+    ["revenue", "ebitda", "pat"].forEach((k) => {
+      set(`[data-out="${k}-fy27e"]`, fmtCr0(m[k].fy27e));
+      set(`[data-out="${k}-fy28e"]`, fmtCr0(m[k].fy28e));
+    });
+    ["ebitda_margin_pct", "net_margin_pct"].forEach((k) => {
+      set(`[data-out="${k}-fy27e"]`, fmt1(m[k].fy27e));
+      set(`[data-out="${k}-fy28e"]`, fmt1(m[k].fy28e));
+    });
+    set('[data-out="marketcap"]', fmtCr0(m.valuation.marketCap));
+    set('[data-out="ev"]', fmtCr0(m.valuation.ev));
+    const putv = (name, val, obj) => { set(`[data-val="${name}-fy27e"]`, fmtMult(obj.fy27e)); set(`[data-val="${name}-fy28e"]`, fmtMult(obj.fy28e)); };
+    putv("pe", null, m.valuation.pe);
+    putv("evebitda", null, m.valuation.ev_ebitda);
+    putv("ps", null, m.valuation.price_sales);
+
+    const edited = Object.keys(seed).some((k) => current[k] !== seed[k]);
+    if (editedEl) editedEl.classList.toggle("hidden", !edited);
+    if (resetEl) resetEl.classList.toggle("hidden", !edited);
+  }
+
+  levers.forEach((el) => {
+    el.addEventListener("input", () => {
+      const key = el.getAttribute("data-lever");
+      const v = parseFloat(el.value);
+      if (Number.isFinite(v)) current[key] = v; // else ignore → keep last valid
+      render();
+    });
+  });
+  if (resetEl) {
+    resetEl.addEventListener("click", () => {
+      Object.assign(current, seed);
+      levers.forEach((el) => { el.value = seed[el.getAttribute("data-lever")]; });
+      render();
+    });
+  }
+  render();
+}
+
 // ── entry point ─────────────────────────────────────────────────────────────
 /** Render the full report as an HTML string. Order: header → B → C.1–C.8 → D → E → F → G. */
 export function renderReport(report) {
@@ -497,9 +742,8 @@ export function renderReport(report) {
     managementToneSection(r), // C.7
     analystToneSection(r),    // C.8
     thesisAntiThesisSection(r), // D
-    `<div class="mt-8 mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Coming in Step 5 — interactive model &amp; valuation</div>`,
-    comingNext("E · Financial model"), // Step 5
-    comingNext("F · Valuation"),       // Step 5
+    financialModelSection(r), // E (editable)
+    valuationSection(r),      // F (live)
     convictionSection(r),     // G
   ].join("\n");
 }

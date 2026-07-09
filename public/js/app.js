@@ -5,7 +5,7 @@
 // and logs the report object; it does NOT render the full report yet.
 
 import { qs, qsa, sleep, debounce, escapeHtml, highlightMatch, renderIcons, show, clamp } from "./ui.js";
-import { renderReport } from "./report.js";
+import { renderReport, hydrateModel } from "./report.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 const MAX_RESULTS = 8;        // cap the visible suggestion list
@@ -319,6 +319,7 @@ function renderLoaded(company, report) {
   els.reportRoot.innerHTML = note + renderReport(report);
   state.shownSlug = company.slug;
   renderIcons();
+  hydrateModel(report, els.reportRoot); // wire Section E's editable model → live E + F recompute
 }
 
 function renderError(company, message, kind /* "timeout" | "error" */) {
