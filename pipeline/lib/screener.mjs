@@ -145,21 +145,24 @@ export function parseValuationContext($, ratios) {
   }
   if (hist_median_pe == null) notes.push("historical median P/E not in page HTML (chart-only) — left null");
 
-  // Peer comparison table. Find it by the explicit #peers section, else by signature (a data-table
-  // with a P/E column AND a "Median" row), which survives Screener markup shifts / lazy loading.
+  // Peer comparison table. It lives in the #peers section but is NOT a `table.data-table` and its
+  // headers are not always in <thead> — so read the header row from <thead> OR the first row, and
+  // iterate rows by their <td> cells (which naturally skips a <th>-only header row).
   const peers = [];
   let peer_median_pe = null;
   try {
     const $t = findPeersTable($);
     if ($t && $t.length) {
-      const headers = $t.find("thead th").map((_, th) => $(th).text().replace(/\s+/g, " ").trim()).get();
+      const headers = headerCells($, $t);
       const peCol = peColumnIndex(headers);
-      // The name column is "Name" if present, else the first column (the "S.No." column, when it
+      // The name column is "Name" if present, else the first column (an "S.No." column, when it
       // exists, pushes both the company names AND the "Median …" label into column 1).
       const nameCol = Math.max(0, headers.findIndex((h) => /name/i.test(h)));
       if (peCol < 0) notes.push("peer table found but no P/E column");
-      $t.find("tbody tr").each((_, tr) => {
+      const $rows = $t.find("tbody tr").length ? $t.find("tbody tr") : $t.find("tr");
+      $rows.each((_, tr) => {
         const cells = $(tr).find("td").map((_, td) => $(td).text().replace(/\s+/g, " ").trim()).get();
+        if (!cells.length) return; // header row (th cells only) → skip
         const label = (cells[nameCol] || "").toLowerCase();
         const pe = peCol >= 0 ? parseNum(cells[peCol]) : null;
         if (/median/.test(label)) peer_median_pe = pe;
@@ -175,18 +178,27 @@ export function parseValuationContext($, ratios) {
     notes.push(`peer table parse failed: ${e.message}`);
   }
 
-  // When the peer median couldn't be read, dump a bounded snapshot of the page's tables + the
-  // #peers section so the next artifact reveals Screener's real structure (this runs blind in CI).
+  // When the peer median couldn't be read, dump a bounded snapshot so the next artifact reveals the
+  // real structure — including the #peers TABLE markup itself (not just the section header).
   if (peer_median_pe == null) {
     try {
-      const sigs = $("table.data-table").map((_, t) => $(t).find("thead th").map((_, th) => $(th).text().trim()).get().join("|")).get();
-      notes.push(`DIAG peers: #peers=${$("#peers").length} rows=${$("#peers table tbody tr").length}; data-tables=[${sigs.map((s) => `(${s})`).join(" ")}]`);
-      const snip = ($("#peers").html() || "").replace(/\s+/g, " ").trim().slice(0, 800);
-      if (snip) notes.push(`DIAG peers-html: ${snip}`);
+      notes.push(`DIAG peers: #peers=${$("#peers").length} rows=${$("#peers table tbody tr").length} tables=${$("#peers table").length}`);
+      const tbl = ($("#peers table").first().html() || "").replace(/\s+/g, " ").trim().slice(0, 900);
+      if (tbl) notes.push(`DIAG peers-table: ${tbl}`);
     } catch { /* diagnostics are best-effort */ }
   }
 
   return { current_pe, hist_median_pe, peer_median_pe, peers: peers.slice(0, 12), notes };
+}
+
+/** A table's header cells — from <thead> if it has real text, else the first body row's th/td
+ *  (Screener renders some peer-table headers in the first row, with an empty or button-only <thead>). */
+function headerCells($, $t) {
+  const theadTxt = $t.find("thead th").map((_, e) => $(e).text().replace(/\s+/g, " ").trim()).get();
+  if (theadTxt.some((s) => s)) return theadTxt;
+  const bodyRows = $t.find("tbody tr");
+  const first = (bodyRows.length ? bodyRows : $t.find("tr")).first();
+  return first.find("th, td").map((_, e) => $(e).text().replace(/\s+/g, " ").trim()).get();
 }
 
 /** Index of a table's P/E column (matches "P/E", "PE", "P/E TTM"), not P/B or PEG. */
@@ -194,19 +206,23 @@ function peColumnIndex(headers) {
   return headers.findIndex((h) => /^p\s*\/?\s*e(\s*ttm)?$/i.test(String(h).replace(/\s+/g, " ").trim()) || /^pe$/i.test(String(h).replace(/\s+/g, "")));
 }
 
-/** Locate Screener's peer-comparison table: the explicit #peers section, else the first data-table
- *  whose header has a P/E column AND whose body has a "Median" row (the peer-table signature). */
+/** Locate Screener's peer-comparison table: the table inside #peers with a P/E column (its headers
+ *  are not in a data-table <thead>), else any table with a P/E column AND a "Median" row. */
 function findPeersTable($) {
-  const explicit = $("#peers table, section#peers table, [id*='peers'] table").filter((_, t) => $(t).find("thead th").length).first();
-  if (explicit && explicit.length) return explicit;
+  let chosen = null;
+  $("#peers table, section#peers table, [id*='peers'] table").each((_, t) => {
+    if (!chosen && peColumnIndex(headerCells($, $(t))) >= 0) chosen = $(t);
+  });
+  if (chosen) return chosen;
+  const firstInPeers = $("#peers table").first();
+  if (firstInPeers.length) return firstInPeers;
   let found = null;
-  $("table.data-table").each((_, t) => {
+  $("table").each((_, t) => {
     if (found) return;
     const $t = $(t);
-    const headers = $t.find("thead th").map((_, th) => $(th).text().trim()).get();
     // "Median" may sit in any column (an S.No. column shifts it) — match the whole row text.
-    const hasMedian = $t.find("tbody tr").filter((_, tr) => /median/i.test($(tr).text())).length > 0;
-    if (peColumnIndex(headers) >= 0 && hasMedian) found = $t;
+    const hasMedian = $t.find("tr").filter((_, tr) => /median/i.test($(tr).text())).length > 0;
+    if (peColumnIndex(headerCells($, $t)) >= 0 && hasMedian) found = $t;
   });
   return found;
 }
