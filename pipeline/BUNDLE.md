@@ -23,10 +23,11 @@ download the `bundle` artifact.
 
 ```
 pipeline/out/<slug>/
-  bundle.json      the structured data (below)         ← Step 6 writes
-  transcript.txt   extracted concall transcript text (if a transcript was found + fetched)
-  ppt.txt          extracted investor-PPT text (if found + fetched)
-  report.json      the report (schema-shaped, built up slice-by-slice)  ← Step 7+ write
+  bundle.json        the structured data (below)         ← Step 6 writes
+  transcript.txt     extracted concall transcript text (if a transcript was found + fetched)
+  ppt.txt            extracted investor-PPT text (if found + fetched)
+  report.json        the report (schema-shaped, built up slice-by-slice)  ← Step 7+ write
+  verification.json  Step 8 audit sidecar (verdicts on Step 7's transcript claims — NOT part of the report)
 ```
 
 ## `bundle.json` shape
@@ -83,18 +84,22 @@ it owns, and writes it back. The shape is `public/data/report.schema.json` (the 
     "expansion_flags":           [ … ],  // Step 7 — C.3
     "thesis_triggers":           [ … ],  // Step 7 — C.4
     "classification":            [ … ],  // Step 7 — C.5
-    "risks":                     [],     // Step 8 — C.6  (web-sourced — Step 7 leaves it [])
+    "risks":                     [ … ],  // Step 8a — C.6  (WEB-sourced; Step 7 leaves it [])
     "management_tone":           [ … ],  // Step 7 — C.7
     "analyst_tone":              { … }    // Step 7 — C.8
   },
-  "thesis":         [],   // Step 8 — Section D  (falsifiable bull points)
-  "anti_thesis":    [],   // Step 8 — Section D  (falsifiable bear points)
-  "key_takeaways":  [],   // Step 8 — synthesis
+  "thesis":         [ … ],// Step 8a — Section D  (falsifiable bull points, Web/Est.)
+  "anti_thesis":    [ … ],// Step 8a — Section D  (falsifiable bear points, Web/Est.)
+  "key_takeaways":  [],   // Step 9 — synthesis across B–G (needs F + G, so it waits)
   "financials":     { … },// Step 9 — from bundle.fy26a + the model
   "valuation":      { … },// Step 9
   "next_steps":     [ … ] // Step 9
 }
 ```
+
+A second model (Step 8b) then AUDITS Step 7's transcript claims and may prune a clear
+hallucination out of `concall.guidance` / `concall.expansion_flags` / `about.*`; every verdict is
+logged to the `verification.json` sidecar (never surfaced in the client report).
 
 **Step 7** (`extract-concall.mjs`, the first LLM step) writes `meta` + `about` (B) +
 `concall.{guidance,themes,tone_shift_vs_last_quarter,expansion_flags,thesis_triggers,`
@@ -122,6 +127,44 @@ Extraction rules honoured by Step 7:
 - The written B+C is validated against `report.schema.json` before the process exits non-zero on
   failure. Offline unit tests (`pipeline/test/extract.test.mjs`, no deps, no OpenAI) cover
   prompt-building, assembly, source-tagging, the PPT-only path, and validation.
+
+**Step 8a** (`research-concall.mjs`) adds the **web-grounded** slices Step 7 deliberately skipped:
+
+```sh
+# after extract-concall has written report.json:
+OPENAI_API_KEY=…  [FIRECRAWL_API_KEY=…]  node pipeline/research-concall.mjs "Navin Fluorine"
+```
+
+- **C.6 risks** — a handful of TARGETED web queries (OpenAI Responses `web_search` → Firecrawl
+  `/v1/search` fallback) surface risks **not** volunteered on the call: pending litigation,
+  SEBI/regulatory overhang, promoter pledge/stake changes, related-party flags, rating actions.
+  Each `risk` string ends with a real `(Source: <URL>)`; `source` is `"Web"`. **Empty array if
+  nothing is found — never a fabricated risk.**
+- **Section D thesis / anti-thesis** — 3–5 structural points each, every one carrying a concrete
+  **`falsifier`** (a metric/event that would prove it wrong). A point with no genuine falsifier is
+  **dropped** at assembly (the schema can't express "non-empty", so the pipeline enforces it).
+  `source` is `"Web"` or `"Est."` per point.
+
+**Step 8b** (`verify-extract.mjs`) is an **internal quality tool** — it adds no visible section to
+the report:
+
+```sh
+# a second model audits Step 7's transcript claims:
+OPENAI_API_KEY=…  [ANTHROPIC_API_KEY=…]  node pipeline/verify-extract.mjs "Navin Fluorine"
+```
+
+- Re-reads `report.json` + `transcript.txt` and asks a **second model** to judge Step 7's
+  transcript-sourced claims (C.1 guidance, C.3 expansion_flags, B's transcript-derived facts)
+  against the transcript, returning `supported` / `partial` / `unsupported` + confidence per claim.
+- Conservatively **drops only** claims marked `unsupported` with non-low confidence (clear
+  hallucinations); everything else is kept. **All** verdicts are logged to `verification.json`.
+- `VERIFY_MODEL` is one configurable constant (defaults to a *different* OpenAI model than
+  extraction). Setting **`ANTHROPIC_API_KEY`** makes the audit a true **cross-provider** check (a
+  different model family judging the first model) — stronger and more independent than same-provider.
+  Gemini could be added the same way.
+- Offline unit tests (`pipeline/test/research.test.mjs`, no deps, no network) cover risk/thesis
+  assembly, the falsifier rule, and the verifier flagging logic (a planted hallucinated guidance
+  item is asserted flagged, dropped, and logged).
 
 ## What "graceful degradation" means here
 
