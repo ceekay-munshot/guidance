@@ -508,9 +508,17 @@ function seedEdits(report) {
 export function computeModel(report, edits) {
   const e = edits || {};
   const inputs = report.meta?.inputs ?? {};
-  const revA = asNum(rowByKey(report, "revenue").fy26a, 0);
+  const revRow = rowByKey(report, "revenue");
 
   const g27 = asNum(e.growth_fy27, 0), g28 = asNum(e.growth_fy28, 0);
+  // Base-year revenue. FY26A is nullable in the schema — if it's absent, back out an
+  // implied base from the reported FY27E so forecasts reconcile instead of zeroing out.
+  let revA = asNum(revRow.fy26a, null);
+  if (revA === null) {
+    const f27 = asNum(revRow.fy27e, null);
+    revA = f27 !== null && 1 + g27 / 100 !== 0 ? f27 / (1 + g27 / 100) : 0;
+  }
+
   const em27 = asNum(e.ebitda_margin_fy27, 0), em28 = asNum(e.ebitda_margin_fy28, 0);
   const nm27 = asNum(e.net_margin_fy27, 0), nm28 = asNum(e.net_margin_fy28, 0);
   const cmp = asNum(e.cmp, asNum(inputs.cmp, 0));
@@ -537,6 +545,27 @@ export function computeModel(report, edits) {
       ev_ebitda: { fy27e: ratio(ev, eb27), fy28e: ratio(ev, eb28) },
       price_sales: { fy27e: ratio(marketCap, rev27), fy28e: ratio(marketCap, rev28) },
     },
+  };
+}
+
+/**
+ * The as-generated (validated) values, in the same shape computeModel returns. Shown on the
+ * initial/unedited view so Section E rows and Section F multiples reconcile EXACTLY with the
+ * report JSON (no recompute drift); computeModel takes over once the user edits a lever.
+ */
+function artifactValues(report) {
+  const g = (k) => rowByKey(report, k);
+  const val = report.valuation ?? {};
+  const inputs = report.meta?.inputs ?? {};
+  const mc = asNum(inputs.market_cap_cr, asNum(inputs.cmp, 0) * asNum(inputs.shares_out_cr, 0));
+  const yrs = (k) => ({ fy27e: g(k).fy27e, fy28e: g(k).fy28e });
+  return {
+    revenue: yrs("revenue"),
+    ebitda: yrs("ebitda"),
+    ebitda_margin_pct: yrs("ebitda_margin_pct"),
+    pat: yrs("pat"),
+    net_margin_pct: yrs("net_margin_pct"),
+    valuation: { cmp: asNum(inputs.cmp, 0), marketCap: mc, ev: mc + asNum(inputs.net_debt_cr, 0), pe: val.pe ?? {}, ev_ebitda: val.ev_ebitda ?? {}, price_sales: val.price_sales ?? {} },
   };
 }
 
@@ -567,7 +596,9 @@ function financialModelSection(report) {
   const rows = report.financials?.rows ?? [];
   if (!rows.length) return sectionCard("E · Financial model (₹ Cr)", empty("No financial model."));
   const seed = seedEdits(report);
-  const m = computeModel(report, seed);
+  // Initial view = the as-generated artifact (reconciles exactly with the report JSON);
+  // hydrateModel switches to computeModel once a lever is edited.
+  const m = artifactValues(report);
   const compSrc = { revenue: m.revenue, ebitda: m.ebitda, ebitda_margin_pct: m.ebitda_margin_pct, pat: m.pat, net_margin_pct: m.net_margin_pct };
 
   // A forecast cell: computed rows get a data-out hook + live value; display-only rows show baseline.
@@ -640,7 +671,7 @@ function financialModelSection(report) {
 // ── F · live valuation ───────────────────────────────────────────────────────
 function valuationSection(report) {
   const seed = seedEdits(report);
-  const m = computeModel(report, seed);
+  const m = artifactValues(report); // initial view = validated artifact; goes live once edited
   const priceLever = `
     <div class="flex flex-wrap items-end gap-x-6 gap-y-3 mb-5">
       <label class="flex flex-col gap-1">
@@ -664,8 +695,9 @@ function valuationSection(report) {
   );
   const sanity = report.valuation?.sanity_check
     ? `<div class="mt-4 rounded-xl bg-indigo-50/60 ring-1 ring-inset ring-indigo-100 p-4">
-         <div class="flex items-center gap-2 text-indigo-700 font-semibold text-sm mb-1"><i data-lucide="scale" class="w-4 h-4"></i>Sanity check</div>
+         <div class="flex items-center gap-2 text-indigo-700 font-semibold text-sm mb-1"><i data-lucide="scale" class="w-4 h-4"></i>Sanity check <span class="font-normal text-slate-400">(as generated)</span></div>
          <p class="text-sm text-slate-600 leading-relaxed">${escapeHtml(report.valuation.sanity_check)}</p>
+         <p data-sanity-edited class="hidden text-xs text-amber-600 mt-2 font-medium">⚠ Reflects the original assumptions — your edits above are not reflected in this text.</p>
        </div>`
     : "";
   return sectionCard("F · Valuation", `${priceLever}${valTbl}${sanity}`);
@@ -683,10 +715,14 @@ export function hydrateModel(report, root) {
   const current = { ...seed };
   const editedEl = root.querySelector("[data-model-edited]");
   const resetEl = root.querySelector("[data-model-reset]");
+  const sanityNote = root.querySelector("[data-sanity-edited]");
   const set = (sel, txt) => { const el = root.querySelector(sel); if (el) el.textContent = txt; };
 
   function render() {
-    const m = computeModel(report, current);
+    const edited = Object.keys(seed).some((k) => current[k] !== seed[k]);
+    // Unedited → show the validated artifact (reconciles with the report JSON);
+    // edited → show the live recompute.
+    const m = edited ? computeModel(report, current) : artifactValues(report);
     ["revenue", "ebitda", "pat"].forEach((k) => {
       set(`[data-out="${k}-fy27e"]`, fmtCr0(m[k].fy27e));
       set(`[data-out="${k}-fy28e"]`, fmtCr0(m[k].fy28e));
@@ -697,14 +733,15 @@ export function hydrateModel(report, root) {
     });
     set('[data-out="marketcap"]', fmtCr0(m.valuation.marketCap));
     set('[data-out="ev"]', fmtCr0(m.valuation.ev));
-    const putv = (name, val, obj) => { set(`[data-val="${name}-fy27e"]`, fmtMult(obj.fy27e)); set(`[data-val="${name}-fy28e"]`, fmtMult(obj.fy28e)); };
-    putv("pe", null, m.valuation.pe);
-    putv("evebitda", null, m.valuation.ev_ebitda);
-    putv("ps", null, m.valuation.price_sales);
+    const putv = (name, obj) => { set(`[data-val="${name}-fy27e"]`, fmtMult(obj.fy27e)); set(`[data-val="${name}-fy28e"]`, fmtMult(obj.fy28e)); };
+    putv("pe", m.valuation.pe);
+    putv("evebitda", m.valuation.ev_ebitda);
+    putv("ps", m.valuation.price_sales);
 
-    const edited = Object.keys(seed).some((k) => current[k] !== seed[k]);
     if (editedEl) editedEl.classList.toggle("hidden", !edited);
     if (resetEl) resetEl.classList.toggle("hidden", !edited);
+    // Stored sanity_check prose is frozen at the original assumptions — flag it once edited.
+    if (sanityNote) sanityNote.classList.toggle("hidden", !edited);
   }
 
   levers.forEach((el) => {
