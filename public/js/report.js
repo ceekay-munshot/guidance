@@ -482,7 +482,16 @@ const fmtMult = (v) => (typeof v === "number" && isFinite(v) ? `${v.toFixed(1)}x
 /** Rows the model recomputes; the rest (gross_margin_pct, adj_ebitda_margin_pct) are display-only. */
 const MODEL_COMPUTED = new Set(["revenue", "ebitda", "ebitda_margin_pct", "pat", "net_margin_pct"]);
 
-const rowByKey = (report, key) => (report.financials?.rows ?? []).find((r) => r.key === key) || {};
+/** Expected unit per key. The schema doesn't couple key↔unit, so the model validates it. */
+const KEY_UNITS = { revenue: "rs_cr", gross_margin_pct: "pct", ebitda: "rs_cr", ebitda_margin_pct: "pct", adj_ebitda_margin_pct: "pct", pat: "rs_cr", net_margin_pct: "pct" };
+
+/** Find a financial row by key, validating its unit — a wrong-unit row (e.g. revenue tagged
+ *  "pct") is ignored so the model never treats a percentage as ₹ crore and corrupts E/F. */
+const rowByKey = (report, key) => {
+  const r = (report.financials?.rows ?? []).find((x) => x.key === key);
+  if (!r) return {};
+  return KEY_UNITS[key] && r.unit !== KEY_UNITS[key] ? {} : r;
+};
 
 /** Seed the editable levers from assumptions + the FY27/FY28 row values + inputs.cmp. */
 export function seedEdits(report) {
@@ -491,19 +500,20 @@ export function seedEdits(report) {
   const em = rowByKey(report, "ebitda_margin_pct");
   const nm = rowByKey(report, "net_margin_pct");
   const rev = rowByKey(report, "revenue"), eb = rowByKey(report, "ebitda"), pat = rowByKey(report, "pat");
-  // When a margin row is null, infer it from the reported abs rows (ebitda/pat ÷ revenue) so
-  // seeding preserves the reported earnings instead of zeroing PAT on the first edit.
+  // When a margin row is null, infer it from the reported abs rows (ebitda/pat ÷ revenue) — this
+  // preserves the validated artifact. Prefer the implied value OVER assumptions.margin, which may
+  // be rounded/divergent. Returns null when it can't be computed so the fallback chain continues.
   const impliedMargin = (numer, denom) => {
     const n = asNum(numer, null), d = asNum(denom, null);
-    return n !== null && d !== null && d !== 0 ? (n / d) * 100 : 0;
+    return n !== null && d !== null && d !== 0 ? (n / d) * 100 : null;
   };
   return {
     growth_fy27: asNum(a.revenue_growth?.fy27, 0),
     growth_fy28: asNum(a.revenue_growth?.fy28, 0),
-    ebitda_margin_fy27: asNum(em.fy27e, asNum(a.margin?.fy27, impliedMargin(eb.fy27e, rev.fy27e))),
-    ebitda_margin_fy28: asNum(em.fy28e, asNum(a.margin?.fy28, impliedMargin(eb.fy28e, rev.fy28e))),
-    net_margin_fy27: asNum(nm.fy27e, impliedMargin(pat.fy27e, rev.fy27e)),
-    net_margin_fy28: asNum(nm.fy28e, impliedMargin(pat.fy28e, rev.fy28e)),
+    ebitda_margin_fy27: asNum(em.fy27e, asNum(impliedMargin(eb.fy27e, rev.fy27e), asNum(a.margin?.fy27, 0))),
+    ebitda_margin_fy28: asNum(em.fy28e, asNum(impliedMargin(eb.fy28e, rev.fy28e), asNum(a.margin?.fy28, 0))),
+    net_margin_fy27: asNum(nm.fy27e, asNum(impliedMargin(pat.fy27e, rev.fy27e), 0)),
+    net_margin_fy28: asNum(nm.fy28e, asNum(impliedMargin(pat.fy28e, rev.fy28e), 0)),
     cmp: asNum(inputs.cmp, 0),
   };
 }
@@ -578,20 +588,35 @@ function artifactValues(report) {
   };
 }
 
-const OPERATING_LEVERS = ["growth_fy27", "growth_fy28", "ebitda_margin_fy27", "ebitda_margin_fy28", "net_margin_fy27", "net_margin_fy28"];
+const GROWTH_LEVERS = ["growth_fy27", "growth_fy28"];
+const EBITDA_LEVERS = ["ebitda_margin_fy27", "ebitda_margin_fy28"];
+const NETM_LEVERS = ["net_margin_fy27", "net_margin_fy28"];
 
 /**
- * The values to DISPLAY for the given edit state — separates the earnings model from the price lever:
- *   • nothing edited      → the validated artifact (rows + stored report.valuation), exact.
- *   • CMP only            → earnings stay the artifact; only market cap / EV / multiples re-value
- *                           (pure price sensitivity — no earnings remodel).
- *   • an operating lever  → earnings recompute via computeModel; multiples follow.
+ * The values to DISPLAY for the given edit state. GRANULAR — each row only recomputes from the
+ * levers that actually drive it, so an edit to one assumption never disturbs the others:
+ *   • nothing edited       → the validated artifact (exact; reconciles with report.valuation).
+ *   • revenue growth        → revenue recomputes; EBITDA/PAT follow (they scale with revenue).
+ *   • a margin only         → revenue stays the artifact; only EBITDA (or PAT) re-derives.
+ *   • CMP only              → earnings stay the artifact; only market cap / EV / multiples move.
+ * Valuation always re-values off the current CMP and the current earnings basis.
  */
 export function displayModel(report, current, seed) {
-  const opEdited = OPERATING_LEVERS.some((k) => current[k] !== seed[k]);
+  const diff = (keys) => keys.some((k) => current[k] !== seed[k]);
+  const growthEdited = diff(GROWTH_LEVERS), ebEdited = diff(EBITDA_LEVERS), nmEdited = diff(NETM_LEVERS);
   const cmpEdited = current.cmp !== seed.cmp;
-  const earn = opEdited ? computeModel(report, current) : artifactValues(report);
-  if (!opEdited && !cmpEdited) return earn; // exact artifact
+  if (!growthEdited && !ebEdited && !nmEdited && !cmpEdited) return artifactValues(report);
+
+  const art = artifactValues(report);
+  // Revenue: recompute only when a growth lever changed; otherwise preserve the artifact rows.
+  const revenue = growthEdited ? computeModel(report, current).revenue : art.revenue;
+  const em = { fy27e: asNum(current.ebitda_margin_fy27, 0), fy28e: asNum(current.ebitda_margin_fy28, 0) };
+  const nm = { fy27e: asNum(current.net_margin_fy27, 0), fy28e: asNum(current.net_margin_fy28, 0) };
+  // EBITDA/PAT: re-derive from revenue × margin when their revenue or margin changed; else artifact.
+  const ebitda = growthEdited || ebEdited ? { fy27e: (revenue.fy27e * em.fy27e) / 100, fy28e: (revenue.fy28e * em.fy28e) / 100 } : art.ebitda;
+  const pat = growthEdited || nmEdited ? { fy27e: (revenue.fy27e * nm.fy27e) / 100, fy28e: (revenue.fy28e * nm.fy28e) / 100 } : art.pat;
+  const ebitda_margin_pct = growthEdited || ebEdited ? em : art.ebitda_margin_pct;
+  const net_margin_pct = growthEdited || nmEdited ? nm : art.net_margin_pct;
 
   const inputs = report.meta?.inputs ?? {};
   const shares = asNum(inputs.shares_out_cr, 0), netDebt = asNum(inputs.net_debt_cr, 0);
@@ -599,12 +624,12 @@ export function displayModel(report, current, seed) {
   const marketCap = cmp * shares, ev = marketCap + netDebt;
   const ratio = (n, d) => (typeof d === "number" && d > 0 ? n / d : null);
   return {
-    revenue: earn.revenue, ebitda: earn.ebitda, ebitda_margin_pct: earn.ebitda_margin_pct, pat: earn.pat, net_margin_pct: earn.net_margin_pct,
+    revenue, ebitda, ebitda_margin_pct, pat, net_margin_pct,
     valuation: {
       marketCap, ev,
-      pe: { fy27e: ratio(marketCap, earn.pat.fy27e), fy28e: ratio(marketCap, earn.pat.fy28e) },
-      ev_ebitda: { fy27e: ratio(ev, earn.ebitda.fy27e), fy28e: ratio(ev, earn.ebitda.fy28e) },
-      price_sales: { fy27e: ratio(marketCap, earn.revenue.fy27e), fy28e: ratio(marketCap, earn.revenue.fy28e) },
+      pe: { fy27e: ratio(marketCap, pat.fy27e), fy28e: ratio(marketCap, pat.fy28e) },
+      ev_ebitda: { fy27e: ratio(ev, ebitda.fy27e), fy28e: ratio(ev, ebitda.fy28e) },
+      price_sales: { fy27e: ratio(marketCap, revenue.fy27e), fy28e: ratio(marketCap, revenue.fy28e) },
     },
   };
 }
