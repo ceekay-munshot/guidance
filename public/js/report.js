@@ -1,14 +1,15 @@
-// report.js — read-only report renderer (STEP 3: PART 1).
+// report.js — read-only report renderer (STEPS 3–4).
 // Pure: takes the loaded report object and returns an HTML string. Renders strictly
 // from report.schema.json's shape. ALL rendered strings are escaped — the data will be
 // LLM-generated later, so treat it as untrusted.
 //
-// Sections built here: header strip, Key Takeaways (hero), B (about), C.1 guidance,
-// C.2 themes, C.3 expansion flags, C.4 thesis-triggers. C.5–C.8 / D / E / F / G render
-// as light "coming next" headers (Steps 4–5 fill them in).
+// Built: header strip, Key Takeaways (hero), B (about), C.1 guidance, C.2 themes,
+// C.3 expansion flags, C.4 thesis-triggers  [Step 3]; C.5 classification, C.6 risks,
+// C.7 management tone, C.8 analyst tone, D thesis/anti-thesis, G conviction  [Step 4].
+// Only E (financial model) and F (valuation) remain "coming next" — Step 5's interactive core.
 //
-// Reusable helpers Steps 4–5 lean on: sourceTag(), stancePill(), chip(), badge(),
-// sectionCard(), table(). Keep them small and composable.
+// Reusable helpers: sourceTag(), stancePill(), toneBadge(), chip(), sectionCard(), table().
+// Keep them small and composable.
 
 import { escapeHtml } from "./ui.js";
 
@@ -313,31 +314,192 @@ function thesisTriggersSection(report) {
   return sectionCard("C.4 · Thesis-trigger checklist", body);
 }
 
-// ── coming-next outline (Steps 4–5) ─────────────────────────────────────────
-const UPCOMING = [
-  "C.5 · Classification tags",
-  "C.6 · Risks",
-  "C.7 · Management tone",
-  "C.8 · Analyst tone",
-  "D · Thesis vs Anti-thesis",
-  "E · Financial model",
-  "F · Valuation",
-  "G · Conviction / verdict",
-];
+// ── 8 · C.5 Classification (boxed, distinct — client scans this first) ───────
+function classificationSection(report) {
+  const tags = report.concall?.classification ?? [];
+  const body = tags.length
+    ? `<div class="space-y-3">${tags
+        .map(
+          (t) => `
+          <div class="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-4">
+            <span class="inline-flex items-center rounded-full bg-indigo-600 text-white px-3 py-1 text-sm font-bold shrink-0 self-start">${escapeHtml(dash(t.tag))}</span>
+            <span class="text-sm text-slate-600">${escapeHtml(dash(t.justification))}</span>
+          </div>`
+        )
+        .join("")}</div>`
+    : empty("No classification tags.");
+  // Deliberately heavier than the plain .card tables: ring, tinted gradient, left accent.
+  return `
+  <section class="fade-in mb-6 rounded-3xl p-6 sm:p-8 ring-2 ring-indigo-100 relative overflow-hidden" style="background:linear-gradient(180deg,#faf9ff,#f5f3ff)">
+    <div class="absolute inset-y-0 left-0 w-1.5" style="background:linear-gradient(180deg,#6366F1,#EC4899)"></div>
+    <h3 class="font-display text-lg font-bold flex items-center gap-2">
+      <i data-lucide="tags" class="w-5 h-5 text-indigo-600"></i>C.5 · Classification
+    </h3>
+    <p class="text-xs text-slate-400 mb-4">How this quarter reads at a glance.</p>
+    ${body}
+  </section>`;
+}
+
+// ── 9 · C.6 Risks ────────────────────────────────────────────────────────────
+function risksSection(report) {
+  const risks = report.concall?.risks ?? [];
+  const body = risks.length
+    ? table(
+        ["Risk", "Type", "Source"],
+        risks.map((r) => [escapeHtml(dash(r.risk)), `<span class="text-slate-600">${escapeHtml(dash(r.type))}</span>`, sourceTag(r.source) || "—"])
+      )
+    : `<div class="flex items-center gap-2 text-sm text-slate-400"><i data-lucide="shield-check" class="w-4 h-4 text-emerald-500"></i>No material risks surfaced.</div>`;
+  return sectionCard("C.6 · Risks", body);
+}
+
+// ── 10 · C.7 Management tone ─────────────────────────────────────────────────
+const TONE_STYLES = {
+  Confident: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+  Neutral: "bg-slate-100 text-slate-600 ring-slate-200",
+  Defensive: "bg-amber-50 text-amber-700 ring-amber-200",
+};
+/** Management-tone badge: Confident=green, Neutral=slate, Defensive=amber. Sibling of stancePill(). */
+export function toneBadge(tone) {
+  const cls = TONE_STYLES[tone] || TONE_STYLES.Neutral;
+  return `<span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset ${cls}">${escapeHtml(dash(tone))}</span>`;
+}
+function managementToneSection(report) {
+  const tones = report.concall?.management_tone ?? [];
+  const body = tones.length
+    ? `<div class="space-y-3">${tones
+        .map(
+          (t) => `
+          <div class="rounded-xl border border-slate-100 p-4">
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <span class="font-semibold text-slate-800">${escapeHtml(dash(t.theme))}</span>
+              ${toneBadge(t.tone)}
+            </div>
+            <p class="text-sm text-slate-500 italic border-l-2 border-slate-200 pl-3">${escapeHtml(dash(t.anchor))}</p>
+          </div>`
+        )
+        .join("")}</div>`
+    : empty();
+  return sectionCard("C.7 · Management tone", body);
+}
+
+// ── 11 · C.8 Analyst tone ────────────────────────────────────────────────────
+const TENOR_STYLES = {
+  skeptical: "bg-rose-50 text-rose-700 ring-rose-200",
+  constructive: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+  perfunctory: "bg-slate-100 text-slate-600 ring-slate-200",
+};
+function tenorBadge(tenor) {
+  const cls = TENOR_STYLES[tenor] || TENOR_STYLES.perfunctory;
+  return `<span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset ${cls}">${escapeHtml(dash(tenor))}</span>`;
+}
+function analystToneSection(report) {
+  const at = report.concall?.analyst_tone ?? {};
+  const hot = Array.isArray(at.hot_themes) ? at.hot_themes : [];
+  const chips = hot.length ? `<div class="flex flex-wrap gap-2">${hot.map(chip).join(" ")}</div>` : empty();
+  const body = `
+    <div class="grid sm:grid-cols-[1fr_auto] gap-5 items-start">
+      <div>
+        <h4 class="text-sm font-semibold text-slate-600 mb-2">Hot themes <span class="font-normal text-slate-400">(≥2 follow-ups)</span></h4>
+        ${chips}
+      </div>
+      <div>
+        <h4 class="text-sm font-semibold text-slate-600 mb-2">Q&amp;A tenor</h4>
+        ${tenorBadge(at.qa_tenor)}
+      </div>
+    </div>`;
+  return sectionCard("C.8 · Analyst tone", body);
+}
+
+// ── 12 · D Thesis / Anti-thesis (paired claim ↔ falsifier) ───────────────────
+function pointCard(item, accent) {
+  const dot = accent === "thesis" ? "#10b981" : "#f43f5e";
+  return `
+    <div class="rounded-xl border border-slate-100 bg-white/60 p-4">
+      <div class="flex items-start gap-2">
+        <span class="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" style="background:${dot}"></span>
+        <div class="min-w-0">
+          <p class="text-sm text-slate-800 font-medium">${escapeHtml(dash(item.point))}</p>
+          <p class="text-xs text-slate-400 mt-1.5"><span class="font-semibold">Proven wrong if:</span> ${escapeHtml(dash(item.falsifier))}</p>
+          <div class="mt-2">${sourceTag(item.source)}</div>
+        </div>
+      </div>
+    </div>`;
+}
+function thesisAntiThesisSection(report) {
+  const thesis = Array.isArray(report.thesis) ? report.thesis : [];
+  const anti = Array.isArray(report.anti_thesis) ? report.anti_thesis : [];
+  const col = (title, items, accent, icon, ring, txt) => `
+    <div class="rounded-2xl ${ring} p-4 sm:p-5">
+      <h4 class="font-display font-bold mb-3 flex items-center gap-2 ${txt}">
+        <i data-lucide="${icon}" class="w-4 h-4"></i>${escapeHtml(title)}
+      </h4>
+      <div class="space-y-3">${items.length ? items.map((x) => pointCard(x, accent)).join("") : empty()}</div>
+    </div>`;
+  const body = `
+    <div class="grid md:grid-cols-2 gap-4">
+      ${col("Thesis", thesis, "thesis", "trending-up", "ring-1 ring-inset ring-emerald-100 bg-emerald-50/40", "text-emerald-700")}
+      ${col("Anti-thesis", anti, "anti", "trending-down", "ring-1 ring-inset ring-rose-100 bg-rose-50/40", "text-rose-700")}
+    </div>`;
+  return sectionCard("D · Thesis vs Anti-thesis", body);
+}
+
+// ── 13 · G Conviction (boxed, distinct — client scans this first) ────────────
+const CONVICTION_STYLES = {
+  "Buy-watch": { ring: "ring-emerald-300", bg: "linear-gradient(180deg,#f0fdf4,#ecfdf5)", text: "text-emerald-700", icon: "trending-up" },
+  "Hold-watch": { ring: "ring-amber-300", bg: "linear-gradient(180deg,#fffbeb,#fefce8)", text: "text-amber-700", icon: "minus-circle" },
+  "Avoid-watch": { ring: "ring-rose-300", bg: "linear-gradient(180deg,#fff1f2,#fef2f2)", text: "text-rose-700", icon: "trending-down" },
+};
+function convictionSection(report) {
+  const ns = report.next_steps ?? {};
+  const v = ns.conviction;
+  const s = CONVICTION_STYLES[v] || { ring: "ring-slate-200", bg: "#ffffff", text: "text-slate-700", icon: "help-circle" };
+  const monitor = Array.isArray(ns.monitorables) ? ns.monitorables : [];
+  const triggers = Array.isArray(ns.rerating_triggers) ? ns.rerating_triggers : [];
+  const list = (title, items, icon) => `
+    <div>
+      <h4 class="text-sm font-semibold text-slate-600 mb-2 flex items-center gap-1.5"><i data-lucide="${icon}" class="w-4 h-4 text-slate-400"></i>${escapeHtml(title)}</h4>
+      ${items.length ? `<ul class="list-disc list-inside space-y-1 text-sm text-slate-600">${items.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>` : empty()}
+    </div>`;
+  return `
+  <section class="fade-in mb-6 rounded-3xl p-6 sm:p-8 ring-2 ${s.ring}" style="background:${s.bg}">
+    <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+      <span class="inline-block h-4 w-1 rounded-full" style="background:linear-gradient(180deg,#6366F1,#EC4899)"></span>G · Conviction
+    </div>
+    <div class="flex items-center gap-3 mt-2 mb-3">
+      <i data-lucide="${s.icon}" class="w-7 h-7 ${s.text}"></i>
+      <span class="font-display text-2xl font-bold ${s.text}">${escapeHtml(dash(v))}</span>
+    </div>
+    <p class="text-slate-700 leading-relaxed">${escapeHtml(dash(ns.conviction_note))}</p>
+    <p class="text-[11px] text-slate-400 mt-3 border-t border-slate-200/70 pt-3">
+      A research observation, <span class="font-semibold">not investment advice</span> — Munshot is not a SEBI-registered investment adviser. Do your own diligence.
+    </p>
+    <div class="grid sm:grid-cols-2 gap-5 mt-5">
+      ${list("Monitorables", monitor, "activity")}
+      ${list("Re-rating triggers", triggers, "zap")}
+    </div>
+  </section>`;
+}
 
 // ── entry point ─────────────────────────────────────────────────────────────
-/** Render the full report (Part 1 sections + the outline of what's next) as an HTML string. */
+/** Render the full report as an HTML string. Order: header → B → C.1–C.8 → D → E → F → G. */
 export function renderReport(report) {
   const r = report || {};
   return [
     headerStrip(r),
     keyTakeaways(r),
-    aboutSection(r),
-    guidanceSection(r),
-    themesSection(r),
-    expansionSection(r),
-    thesisTriggersSection(r),
-    `<div class="mt-8 mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Coming in Steps 4–5</div>`,
-    ...UPCOMING.map(comingNext),
+    aboutSection(r),          // B
+    guidanceSection(r),       // C.1
+    themesSection(r),         // C.2
+    expansionSection(r),      // C.3
+    thesisTriggersSection(r), // C.4
+    classificationSection(r), // C.5
+    risksSection(r),          // C.6
+    managementToneSection(r), // C.7
+    analystToneSection(r),    // C.8
+    thesisAntiThesisSection(r), // D
+    `<div class="mt-8 mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Coming in Step 5 — interactive model &amp; valuation</div>`,
+    comingNext("E · Financial model"), // Step 5
+    comingNext("F · Valuation"),       // Step 5
+    convictionSection(r),     // G
   ].join("\n");
 }
