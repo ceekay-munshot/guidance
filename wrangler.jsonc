@@ -1,0 +1,27 @@
+{
+  // Munshot — Concall Deep Dive · Cloudflare Worker + Static Assets
+  // Static site in ./public is served via the ASSETS binding; the Worker
+  // (worker/index.js) owns /api/* and lets everything else fall through to assets.
+  // No build step — vanilla ES modules, all libs via CDN.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "munshot-concall-deep-dive",
+  "compatibility_date": "2026-07-01",
+  "main": "worker/index.js",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  }
+
+  // ── Bindings step 10 will add (documented here so the contract is visible) ──
+  // KV namespace that the GitHub Action writes finished report JSON into and the
+  // Worker reads on GET /api/report?slug=… :
+  //
+  // "kv_namespaces": [
+  //   { "binding": "REPORTS", "id": "<production-kv-id>", "preview_id": "<preview-kv-id>" }
+  // ]
+  //
+  // Secrets are NOT set here — add them with `wrangler secret put <NAME>`:
+  //   GITHUB_TOKEN   — fine-grained PAT with `actions:write` to dispatch the workflow
+  //   GITHUB_REPO    — "owner/repo" the analyze workflow lives in
+  //   GITHUB_BRANCH  — ref to dispatch against (e.g. "main")
+}

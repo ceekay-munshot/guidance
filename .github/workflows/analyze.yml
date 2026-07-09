@@ -1,0 +1,64 @@
+# Munshot — Concall Deep Dive · analyze pipeline
+# ---------------------------------------------------------------------------
+# PLACEHOLDER (step 1). This workflow is intentionally a no-op stub. The real
+# compute pipeline is built in later steps (~step 8-11). It exists now only so
+# the Worker's future `workflow_dispatch` call (step 10) has a target and the
+# contract is visible.
+#
+# WHAT IT WILL DO (later steps):
+#   1. Receive { slug, company, ticker } via workflow_dispatch (from the Worker).
+#   2. Run a Node pipeline (pipeline/) that:
+#        - fetches the latest concall transcript + investor PPT (Firecrawl / web),
+#        - pulls price/size inputs (CMP, shares, net debt),
+#        - calls LLMs to produce the report per public/data/report.schema.json,
+#        - validates the JSON against that schema.
+#   3. Writes the finished report to Cloudflare KV (namespace REPORTS) keyed by slug,
+#      using CF_ACCOUNT_ID + CF_API_TOKEN (Workers KV Storage: Edit).
+#
+# REQUIRED REPO SECRETS (add before wiring step 10 — none are used yet):
+#   OPENAI_API_KEY / ANTHROPIC_API_KEY   LLM providers
+#   FIRECRAWL_API_KEY                    transcript / web fetch
+#   CF_ACCOUNT_ID                        Cloudflare account id
+#   CF_API_TOKEN                         token scoped to Workers KV Storage: Edit
+#   CF_KV_NAMESPACE_ID                   the REPORTS namespace id
+# ---------------------------------------------------------------------------
+
+name: analyze
+
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: "URL-safe company slug (KV key)"
+        required: true
+        type: string
+      company:
+        description: "Company name"
+        required: false
+        type: string
+      ticker:
+        description: "NSE/BSE ticker"
+        required: false
+        type: string
+
+# No repo write access needed — the job only writes to Cloudflare KV via API.
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Placeholder — pipeline not built yet
+        # Route untrusted workflow inputs through env vars. Never interpolate
+        # ${{ inputs.* }} directly into a run: script — GitHub expands the template
+        # into the shell source before bash runs, so a crafted input (quotes,
+        # $(...)) would be executed. As env vars they are plain, inert strings.
+        env:
+          SLUG: ${{ inputs.slug }}
+          COMPANY: ${{ inputs.company }}
+          TICKER: ${{ inputs.ticker }}
+        run: |
+          echo "STUB: analyze pipeline is not implemented yet."
+          echo "slug=$SLUG company=$COMPANY ticker=$TICKER"
+          echo "Later steps: fetch → LLM → validate against report.schema.json → write to KV."

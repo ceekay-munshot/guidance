@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Munshot — Concall Deep Dive</title>
+  <meta name="description" content="Analyst-grade deep dive on an Indian listed company's latest quarterly earnings call." />
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind (CDN, no build step) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // Same Tailwind config as the sibling dashboard — extend fontFamily only.
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['"Space Grotesk"', 'ui-sans-serif', 'sans-serif'],
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!--
+    Later steps load these via CDN too (kept out of the landing shell to stay light):
+      step 3+  ECharts  → https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js
+      step 5+  ExcelJS  → https://cdn.jsdelivr.net/npm/exceljs/dist/exceljs.min.js
+  -->
+
+  <style>
+    :root { --bg: #FBFAFF; --ink: #1e293b; }
+
+    body {
+      color: var(--ink);
+      background-color: var(--bg);
+      /* Fixed radial-gradient blobs — must match the sibling dashboard exactly. */
+      background-image:
+        radial-gradient(40rem 40rem at 8% -8%, rgba(139,92,246,.16), transparent 60%),
+        radial-gradient(38rem 38rem at 105% 4%, rgba(236,72,153,.12), transparent 58%),
+        radial-gradient(42rem 42rem at 60% 120%, rgba(59,130,246,.12), transparent 60%);
+      background-attachment: fixed;
+      background-repeat: no-repeat;
+      font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+    }
+
+    .font-display { font-family: 'Space Grotesk', ui-sans-serif, sans-serif; }
+    .font-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+    /* Brand gradient clipped to text */
+    .brand-gradient {
+      background: linear-gradient(100deg, #6366F1, #A855F7 45%, #EC4899 80%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    /* Card surface */
+    .card {
+      background: #ffffff;
+      border-radius: 1.5rem;
+      box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 12px 32px -16px rgba(16,24,40,.18);
+    }
+    .card-hover { transition: transform .2s ease, box-shadow .2s ease; }
+    .card-hover:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 20px 44px -18px rgba(16,24,40,.26);
+    }
+
+    /* Primary pill button — indigo → fuchsia gradient */
+    .btn-primary {
+      background: linear-gradient(100deg, #6366F1, #A855F7 45%, #EC4899 80%);
+      color: #fff;
+      border-radius: 9999px;
+      box-shadow: 0 10px 24px -12px rgba(168,85,247,.7);
+      transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease;
+    }
+    .btn-primary:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 14px 30px -12px rgba(168,85,247,.8); }
+    .btn-primary:not(:disabled):active { transform: translateY(0); }
+    .btn-primary:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+
+    /* Fade-in */
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .fade-in { animation: fadeIn .5s ease both; }
+
+    /* Type-ahead dropdown */
+    .typeahead-item[aria-selected="true"], .typeahead-item:hover { background: #f5f3ff; }
+
+    /* Analyzing spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 1.25rem; height: 1.25rem; border-radius: 9999px;
+      border: 2px solid rgba(99,102,241,.25); border-top-color: #8b5cf6;
+      animation: spin .7s linear infinite;
+    }
+  </style>
+</head>
+
+<body class="min-h-screen antialiased">
+  <!-- Header -->
+  <header class="max-w-5xl mx-auto px-6 pt-10 pb-6">
+    <div class="flex items-center gap-2 text-slate-500 text-sm font-medium mb-3">
+      <i data-lucide="sparkles" class="w-4 h-4 text-fuchsia-500"></i>
+      <span class="font-mono tracking-tight">Munshot</span>
+    </div>
+    <h1 class="font-display text-4xl sm:text-5xl font-bold tracking-tight">
+      <span class="brand-gradient">Concall Deep Dive</span>
+    </h1>
+    <p class="mt-3 text-slate-500 max-w-2xl">
+      Pick one Indian listed company, run the analysis, and get an analyst-grade read on its
+      latest quarterly earnings call — thesis, model, valuation and a verdict.
+    </p>
+  </header>
+
+  <!-- Landing card -->
+  <section class="max-w-5xl mx-auto px-6">
+    <div class="card card-hover fade-in p-6 sm:p-8 max-w-2xl mx-auto">
+      <label for="company-search" class="block text-sm font-semibold text-slate-600 mb-2">
+        Company
+      </label>
+
+      <div class="relative">
+        <div class="flex items-center gap-3 rounded-2xl border border-slate-200 focus-within:border-indigo-300 focus-within:ring-4 focus-within:ring-indigo-100 px-4 py-3 transition">
+          <i data-lucide="search" class="w-5 h-5 text-slate-400 shrink-0"></i>
+          <input
+            id="company-search"
+            type="text"
+            autocomplete="off"
+            role="combobox"
+            aria-expanded="false"
+            aria-controls="search-results"
+            aria-autocomplete="list"
+            placeholder="Search NSE/BSE companies — e.g. Navin Fluorine, TCS, SRF…"
+            class="w-full bg-transparent outline-none text-lg placeholder:text-slate-400 font-display"
+          />
+          <button id="clear-btn" type="button" aria-label="Clear" class="hidden text-slate-400 hover:text-slate-600">
+            <i data-lucide="x" class="w-5 h-5"></i>
+          </button>
+        </div>
+
+        <!-- Type-ahead results -->
+        <ul
+          id="search-results"
+          role="listbox"
+          class="hidden absolute z-20 mt-2 w-full max-h-72 overflow-auto card p-2"
+        ></ul>
+      </div>
+
+      <!-- Selected company chip -->
+      <div id="selected-chip" class="hidden mt-4 items-center gap-2 text-sm">
+        <span class="inline-flex items-center gap-2 rounded-full bg-indigo-50 text-indigo-700 px-3 py-1.5 font-medium">
+          <i data-lucide="building-2" class="w-4 h-4"></i>
+          <span id="selected-name"></span>
+          <span id="selected-ticker" class="font-mono text-indigo-400"></span>
+        </span>
+      </div>
+
+      <div class="mt-6 flex items-center justify-between gap-4">
+        <p class="text-xs text-slate-400">
+          One run analyses the <span class="font-medium text-slate-500">latest reported quarter</span>.
+        </p>
+        <button id="run-btn" type="button" disabled
+          class="btn-primary font-semibold px-6 py-3 inline-flex items-center gap-2">
+          <i data-lucide="play" class="w-4 h-4"></i>
+          Run Analyze
+        </button>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- Run states (analyzing / loaded / error) and, from step 3, the report render here. -->
+  <main id="report-root" class="max-w-5xl mx-auto px-6 py-10"></main>
+
+  <footer class="max-w-5xl mx-auto px-6 pb-10 text-xs text-slate-400">
+    Munshot · Concall Deep Dive — sample data for build. Not investment advice.
+  </footer>
+
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
