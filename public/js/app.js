@@ -61,6 +61,7 @@ const search = {
   active: -1,     // highlighted index into items
   mode: "idle",   // "popular" | "matches" | "empty"
   truncated: 0,   // matches hidden beyond MAX_RESULTS
+  query: "",      // the input value the current list was rendered for (staleness check)
 };
 
 let runToken = 0; // bumped each run → stale poll loops / renders bail out
@@ -134,6 +135,7 @@ function renderList(query) {
 
 function openList(query) {
   computeList(query);
+  search.query = query;
   search.active = search.items.length ? 0 : -1;
   search.open = true;
   els.input.setAttribute("aria-expanded", "true");
@@ -375,6 +377,9 @@ function onKeydown(e) {
     case "ArrowUp": e.preventDefault(); moveActive(-1); break;
     case "Enter":
       e.preventDefault();
+      // Flush a pending debounced render so Enter acts on the CURRENT input, not a
+      // stale list left over from a previous query (fast type-then-Enter).
+      if (search.open && search.query !== els.input.value) openList(els.input.value);
       if (search.open && search.active >= 0 && search.items[search.active]) {
         selectCompany(search.items[search.active].slug);
       } else if (state.selected && !state.running) {
