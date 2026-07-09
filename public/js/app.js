@@ -31,21 +31,27 @@ const api = {
     if (!res.ok) throw new Error(`/api/analyze → ${res.status}`);
     return res.json(); // { ok, slug, status: "queued" | "done" }
   },
-  // One poll tick. 200 → { done, report }. 404 → { done:false, status:"queued"|"unknown" }.
+  // One poll tick. 200 → { done, report }. 404 queued/unknown → { done:false, status }.
+  // Any OTHER non-200 (500 asset/KV failure, 400, unexpected shape) is a real error —
+  // throw it so the UI surfaces it instead of silently polling to a 60s timeout.
   async reportTick(slug) {
     const res = await fetch(`/api/report?slug=${encodeURIComponent(slug)}`);
     if (res.status === 200) return { done: true, report: await res.json() };
     let body = {};
     try { body = await res.json(); } catch { /* empty body */ }
-    return { done: false, status: body.status || "queued" };
+    if (res.status === 404 && (body.status === "queued" || body.status === "unknown")) {
+      return { done: false, status: body.status };
+    }
+    throw new Error(body.error || `report fetch failed (HTTP ${res.status})`);
   },
 };
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const state = {
   universe: [],
-  selected: null, // a REAL universe entry, or null (free text never selects)
+  selected: null,  // a REAL universe entry, or null (free text never selects)
   running: false,
+  shownSlug: null, // slug of the report/error currently rendered in #report-root
 };
 
 // Type-ahead sub-state.
@@ -171,6 +177,8 @@ function hideChip() {
 function selectCompany(slug) {
   const company = state.universe.find((c) => c.slug === slug);
   if (!company) return; // only real universe entries can be selected
+  // Changing the target company drops any report still shown for a different one.
+  if (state.shownSlug && state.shownSlug !== slug) clearReport();
   state.selected = company;
   els.input.value = company.name;
   setChip(company);
@@ -186,6 +194,8 @@ function invalidateSelection() {
   state.selected = null;
   hideChip();
   els.run.disabled = true;
+  // Editing away from the selected company makes its report stale — clear it.
+  if (state.shownSlug) clearReport();
 }
 
 function clearAll() {
@@ -194,6 +204,7 @@ function clearAll() {
   hideChip();
   show(els.clear, false);
   els.run.disabled = true;
+  clearReport();
   els.input.focus();
   openList(""); // show Popular so the box is never blank
 }
@@ -259,6 +270,12 @@ async function pollLoop(slug, token) {
 // ── Renders into #report-root ──────────────────────────────────────────────────
 const skeletonRow = (w) => `<div class="h-3 ${w} rounded-full bg-slate-100 animate-pulse"></div>`;
 
+/** Empty the report area — call whenever the shown company is no longer the target. */
+function clearReport() {
+  els.reportRoot.innerHTML = "";
+  state.shownSlug = null;
+}
+
 function renderAnalyzing(company) {
   els.reportRoot.innerHTML = `
     <div class="card fade-in p-6 sm:p-8">
@@ -287,6 +304,9 @@ function setAnalyzingNote(text) {
 
 function renderLoaded(company, report) {
   const meta = report?.meta ?? {};
+  // The stub returns the same sample fixture for every slug. Be honest about it
+  // rather than mislabel the fixture as the searched company.
+  const isFixtureForOther = meta.slug && meta.slug !== company.slug;
   els.reportRoot.innerHTML = `
     <div class="card card-hover fade-in p-6 sm:p-8">
       <div class="flex items-center gap-2 text-emerald-600 font-medium mb-3">
@@ -299,11 +319,17 @@ function renderLoaded(company, report) {
         · ${escapeHtml(meta.quarter ?? "—")}
         · verdict <span class="font-semibold text-slate-700">${escapeHtml(report?.next_steps?.conviction ?? "—")}</span>
       </p>
+      ${isFixtureForOther ? `
+      <p class="text-xs text-amber-600 mt-3">
+        You searched <span class="font-medium">${escapeHtml(company.name)}</span>, but the stub
+        serves one shared sample fixture. The pipeline returns a real per-company report from step 10.
+      </p>` : ""}
       <p class="text-sm text-slate-400 mt-4">
         Full report renderer arrives in <span class="font-medium text-slate-500">step 3</span>.
         The payload is in the console.
       </p>
     </div>`;
+  state.shownSlug = company.slug;
   renderIcons();
 }
 
@@ -322,18 +348,21 @@ function renderError(company, message, kind /* "timeout" | "error" */) {
         Try again
       </button>
     </div>`;
+  state.shownSlug = company.slug;
   renderIcons();
   const retry = qs("#retry-btn");
   if (retry) retry.addEventListener("click", () => { if (state.selected && !state.running) runAnalyze(); });
 }
 
 // ── Events ──────────────────────────────────────────────────────────────────────
-const onInput = debounce(() => {
-  // Typing invalidates any prior pick until a new real entry is selected.
+// Synchronous on every keystroke: invalidate a stale selection immediately so that
+// Run/Enter in the debounce window can't dispatch the old company. Only the expensive
+// list render is debounced.
+function onInputSync() {
   if (state.selected && els.input.value !== state.selected.name) invalidateSelection();
   show(els.clear, els.input.value.length > 0);
-  openList(els.input.value);
-}, 80);
+}
+const onInputRender = debounce(() => openList(els.input.value), 80);
 
 function onKeydown(e) {
   if (!search.open && e.key === "ArrowDown") {
@@ -358,7 +387,7 @@ function onKeydown(e) {
 }
 
 function wireEvents() {
-  els.input.addEventListener("input", onInput);
+  els.input.addEventListener("input", () => { onInputSync(); onInputRender(); });
   els.input.addEventListener("focus", () => { if (!state.running) openList(els.input.value); });
   els.input.addEventListener("keydown", onKeydown);
 

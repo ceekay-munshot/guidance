@@ -83,16 +83,6 @@ const jobs = new Map();
 // Simulated pipeline latency so the frontend poll loop exercises the 404→200 path.
 const SIMULATED_DELAY_MS = 4000;
 
-/** Look up a universe entry by slug — used to remap the fixture to the requested company. */
-async function findCompany(env, request, slug) {
-  try {
-    const universe = await readAssetJson(env, request, "/data/universe.json");
-    return universe.find((c) => c.slug === slug) || null;
-  } catch {
-    return null;
-  }
-}
-
 /** GET /api/universe — the company universe for the search box. */
 async function handleUniverse(env, request) {
   const universe = await readAssetJson(env, request, "/data/universe.json");
@@ -130,7 +120,7 @@ async function handleAnalyze(env, request, url) {
  *   • no job for slug            → 404 { status: "unknown" }
  *   • queued & within the delay  → 404 { status: "queued" }
  *   • queued & delay elapsed     → flips to "done"
- *   • done                       → 200 with the report JSON (remapped to the company)
+ *   • done                       → 200 with the fixture verbatim (always the Navin sample)
  * The 200 body is the pure report artifact (has `meta`) — that IS the "done" signal
  * downstream consumes. Step 10 replaces this with REPORTS.get(slug) from KV.
  */
@@ -148,12 +138,11 @@ async function handleReport(env, request, url) {
     job.status = "done"; // delay elapsed → ready
   }
 
-  // Done → serve the fixture, remapped to the requested company (nice-to-have).
+  // Done → serve the fixture verbatim. It stays the Navin Fluorine sample for ANY
+  // slug (there is only one fixture). We deliberately do NOT rewrite meta to the
+  // requested company: that produced a self-contradictory report (e.g. TCS metadata
+  // over Navin's numbers). Step 10 returns a real, per-company report from KV.
   const report = await readAssetJson(env, request, "/data/sample-report.json");
-  const company = await findCompany(env, request, slug);
-  if (company) {
-    report.meta = { ...report.meta, company: company.name, ticker: company.ticker, slug: company.slug };
-  }
   return json(report);
 }
 

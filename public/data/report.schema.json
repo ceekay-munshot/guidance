@@ -260,7 +260,17 @@
       "properties": {
         "rows": {
           "type": "array",
-          "description": "One object per metric. Convention (in order): Revenue, Gross margin %, EBITDA, EBITDA margin %, Adjusted EBITDA margin % (optional), PAT, Net margin %. Absolute rows carry unit 'rs_cr' (INR crore); margin rows carry unit 'pct'. Downstream code keys off the stable `key`, never the display `metric`.",
+          "description": "One object per metric. Convention (in order): Revenue, Gross margin %, EBITDA, EBITDA margin %, Adjusted EBITDA margin % (optional), PAT, Net margin %. Absolute rows carry unit 'rs_cr' (INR crore); margin rows carry unit 'pct'. Downstream code keys off the stable `key`, never the display `metric`. The six non-optional keys MUST each be present (adj_ebitda_margin_pct is the only optional row) so valuation/renderer code never hits a missing key. `uniqueItems` blocks exact-duplicate rows; the pipeline additionally enforces one row per key.",
+          "minItems": 6,
+          "uniqueItems": true,
+          "allOf": [
+            { "contains": { "type": "object", "required": ["key"], "properties": { "key": { "const": "revenue" } } } },
+            { "contains": { "type": "object", "required": ["key"], "properties": { "key": { "const": "gross_margin_pct" } } } },
+            { "contains": { "type": "object", "required": ["key"], "properties": { "key": { "const": "ebitda" } } } },
+            { "contains": { "type": "object", "required": ["key"], "properties": { "key": { "const": "ebitda_margin_pct" } } } },
+            { "contains": { "type": "object", "required": ["key"], "properties": { "key": { "const": "pat" } } } },
+            { "contains": { "type": "object", "required": ["key"], "properties": { "key": { "const": "net_margin_pct" } } } }
+          ],
           "items": {
             "type": "object",
             "additionalProperties": false,
