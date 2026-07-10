@@ -253,7 +253,7 @@ async function openSavedReport(slug, meta) {
   renderIcons();
   try {
     const decision = await api.reportTick(slug);
-    if (decision.action === "done") mountReport(decision.report, meta);
+    if (decision.action === "done") mountReport(decision.report, meta, decision.partial);
     else if (decision.action === "wait") startAnalyze(meta, false); // cache gone / mid-run → analyze
     else throw new Error(decision.message || "Couldn't open that report.");
   } catch (err) { screens.report.innerHTML = errorCardHtml(meta.name || slug, err.message, () => goLanding()); renderIcons(); }
@@ -356,7 +356,7 @@ async function pollLoop(t, token) {
     if (token !== runToken) return { stop: true };
     const decision = await api.reportTick(t.slug);
     if (token !== runToken) return { stop: true };
-    if (decision.action === "done") { finishLoading(t, decision.report, token); return { stop: true }; }
+    if (decision.action === "done") { finishLoading(t, decision.report, token, decision.partial); return { stop: true }; }
     if (decision.action === "error") { failLoading(t, decision.message); return { stop: true }; }
     if (decision.stage) setStage(decision.stage);
     return { stop: false };
@@ -371,11 +371,11 @@ async function pollLoop(t, token) {
   } finally { document.removeEventListener("visibilitychange", onFocus); }
 }
 
-function finishLoading(t, report, token) {
+function finishLoading(t, report, token, partial = false) {
   if (token !== runToken) return;
   stopCreep(); state.running = false; clearInflight();
   loading.displayPct = 100; loading.stageKey = "done"; paintProgress();
-  mountReport(report, t);
+  mountReport(report, t, partial);
 }
 function failLoading(t, message, timeout = false) {
   stopCreep(); state.running = false; if (!timeout) clearInflight();
@@ -389,12 +389,20 @@ function failLoading(t, message, timeout = false) {
 // ══════════════════════════════════════════════════════════════════════════════
 // SCREEN 3 · REPORT
 // ══════════════════════════════════════════════════════════════════════════════
-function mountReport(report, meta) {
+function mountReport(report, meta, partial = false) {
   runToken++; state.running = false;
   showScreen("report");
   history.replaceState({ screen: "report", slug: report?.meta?.slug }, "", `#/report/${report?.meta?.slug || meta.ticker || ""}`);
   const gen = report?.meta?.generated_at ? `Generated ${relativeTime(report.meta.generated_at)}` : "Live report";
   const nav = REPORT_SECTIONS.map((s) => `<a href="#${s.id}" data-nav="${s.id}" class="whitespace-nowrap text-sm font-medium pb-2 px-1">${escapeHtml(s.label)}</a>`).join("");
+  // Best-effort partial: some fields were unavailable for this company and were left blank. Say so
+  // honestly rather than passing off gaps as data — the report itself shows "—" / "n.m." inline.
+  const partialNote = partial
+    ? `<div class="fade-in mb-6 rounded-2xl bg-amber-50 ring-1 ring-inset ring-amber-200 px-4 py-3 flex items-start gap-2.5 text-sm text-amber-800">
+         <i data-lucide="info" class="w-4 h-4 mt-0.5 shrink-0"></i>
+         <span>Some data wasn't available for this company and has been left blank (shown as &ldquo;—&rdquo; or &ldquo;n.m.&rdquo;). The rest of the analysis is complete.</span>
+       </div>`
+    : "";
   screens.report.innerHTML = `
     <div class="fade-in py-8">
       <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -409,6 +417,7 @@ function mountReport(report, meta) {
       <div class="sticky top-14 z-20 -mx-6 px-6 py-1 bg-[#FBFAFF]/85 backdrop-blur border-b border-slate-100 mb-6 overflow-x-auto">
         <nav class="report-nav flex items-center gap-5">${nav}</nav>
       </div>
+      ${partialNote}
       <div id="report-body">${renderReport(report)}</div>
     </div>`;
   hydrateModel(report, qs("#report-body"));
@@ -512,7 +521,7 @@ async function resumeIfInFlight() {
   const t = { name: run.company || run.slug, ticker: run.ticker || "", slug: run.slug };
   try {
     const decision = await api.reportTick(run.slug);
-    if (decision.action === "done") { clearInflight(); mountReport(decision.report, t); return true; }
+    if (decision.action === "done") { clearInflight(); mountReport(decision.report, t, decision.partial); return true; }
     if (decision.action === "error") { clearInflight(); return false; }
     // Resume the loader ONLY if a run is genuinely active. "unknown" means no job is running (e.g. it
     // finished + fell out of KV, or never started) — don't strand the user on a loader that polls to

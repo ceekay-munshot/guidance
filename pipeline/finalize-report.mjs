@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { callStructured, estimateCost, DEFAULT_MODEL } from "./lib/openai.mjs";
 import { TAKEAWAYS_JSON_SCHEMA } from "./lib/model-schema.mjs";
 import { buildFinalizeMessages, assembleKeyTakeaways, validateFull, stripInternal } from "./lib/model-assemble.mjs";
+import { salvageReport } from "./lib/salvage.mjs";
 import { findOutDir } from "./lib/out.mjs";
 import { log } from "./lib/util.mjs";
 
@@ -60,18 +61,42 @@ async function main() {
   const schema = JSON.parse(await readFile(SCHEMA_PATH, "utf8"));
   const v = validateFull(clean, schema);
 
-  await writeFile(join(dir, "report.json"), JSON.stringify(clean, null, 2));
-  log.step(`Wrote ${join("pipeline/out", slug, "report.json")} (complete, internal metadata stripped)`);
+  // Best-effort partial: if the complete report isn't schema-valid, don't discard it — salvage the
+  // best-effort fields (blank/drop only those, recorded) and publish, UNLESS something load-bearing
+  // (identity, price inputs, financial model, verdict, takeaways) is broken → then hard-fail.
+  let publish = clean, partial = false, degraded = [], fatal = [];
+  if (!v.ok) {
+    const sal = salvageReport(clean, schema);
+    if (sal.ok) { publish = sal.report; partial = true; degraded = sal.degraded; }
+    else { fatal = sal.fatal; }
+  }
+  const publishable = v.ok || partial;
+
+  if (publishable) {
+    await writeFile(join(dir, "report.json"), JSON.stringify(publish, null, 2));
+    log.step(`Wrote ${join("pipeline/out", slug, "report.json")} (complete, internal metadata stripped)`);
+    // Sidecar marker → kv-put surfaces "partial" in the done status so the client can note it.
+    if (partial) await writeFile(join(dir, "partial.json"), JSON.stringify({ partial: true, degraded }, null, 2));
+  }
 
   // ── summary ──
   log.step("FINAL REPORT SUMMARY (complete B–G)");
-  withTakeaways.key_takeaways.forEach((t, i) => console.log(`  ${i + 1}. ${t}`));
-  console.log(`\n  FULL report end-to-end schema validation: ${v.ok ? "PASS ✓" : "FAIL ✗"}`);
-  v.errors.forEach((e) => console.log(`    ✗ ${e}`));
-  if (v.ok) log.ok("This is the first COMPLETE, schema-valid report the pipeline has emitted.");
-  else log.err(`report.json is INVALID — ${v.errors.length} violation(s). Failing loudly (see above).`);
+  (publish.key_takeaways || []).forEach((t, i) => console.log(`  ${i + 1}. ${t}`));
+  if (v.ok) {
+    console.log(`\n  FULL report end-to-end schema validation: PASS ✓`);
+    log.ok("This is a COMPLETE, schema-valid report.");
+  } else if (partial) {
+    console.log(`\n  FULL report end-to-end schema validation: PARTIAL ✓ (published with best-effort gaps)`);
+    v.errors.forEach((e) => console.log(`    · original violation: ${e}`));
+    degraded.forEach((d) => log.warn(`degraded (unavailable, left blank): ${d}`));
+    log.ok(`Published a PARTIAL report — ${degraded.length} best-effort field(s) unavailable; load-bearing sections intact.`);
+  } else {
+    console.log(`\n  FULL report end-to-end schema validation: FAIL ✗ (load-bearing sections broken — not salvageable)`);
+    fatal.forEach((e) => console.log(`    ✗ ${e}`));
+    log.err(`report.json is INVALID in a load-bearing section — ${fatal.length} violation(s). Failing loudly (see above).`);
+  }
 
-  process.exitCode = v.ok ? 0 : 1;
+  process.exitCode = publishable ? 0 : 1;
 }
 
 if (process.argv[1]) {

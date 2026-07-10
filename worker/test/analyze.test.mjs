@@ -47,6 +47,8 @@ ok(parseInflight("") === null && parseInflight("{bad json") === null, "inflight:
 
 // ── pollDecision: the poll-loop state machine ──
 ok(pollDecision({ status: "done", report: { meta: {} } }).action === "done", "pollDecision: done+report → done");
+ok(pollDecision({ status: "done", report: { meta: {} }, partial: true }).partial === true, "pollDecision: carries partial:true through");
+ok(pollDecision({ status: "done", report: { meta: {} } }).partial === false, "pollDecision: partial defaults false");
 ok(pollDecision({ status: "done" }).action !== "done", "pollDecision: done WITHOUT report is not 'done'");
 ok(pollDecision({ status: "queued" }).action === "wait", "pollDecision: queued → wait");
 ok(pollDecision({ status: "running" }).action === "wait", "pollDecision: running → wait");

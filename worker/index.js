@@ -264,10 +264,10 @@ async function handleReport(env, request, url) {
   // its own done status). Until then keep the client polling rather than render an older cached report.
   const doneAt = status && status.state === "done" && status.generated_at ? Date.parse(status.generated_at) : NaN;
   if (Number.isFinite(doneAt)) {
-    if (report && reportT >= doneAt) return json({ ok: true, slug, status: "done", report });
+    if (report && reportT >= doneAt) return json({ ok: true, slug, status: "done", report, partial: status.partial === true });
     return json({ ok: true, slug, status: "running", stage: "finalize", message: "Finishing up…" });
   }
-  if (report) return json({ ok: true, slug, status: "done", report }); // report with no done-status to gate on
+  if (report) return json({ ok: true, slug, status: "done", report, partial: !!(status && status.partial) }); // report with no done-status to gate on
   if (status && status.state === "error") return json({ ok: false, slug, status: "error", error: status.message || "Analysis failed." });
   return json({ ok: false, slug, status: "unknown" });
 }

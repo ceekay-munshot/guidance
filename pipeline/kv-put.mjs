@@ -13,7 +13,7 @@
 // (manual run) is a no-op everywhere.
 
 import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { kvPut, kvConfigured } from "./lib/kv.mjs";
 import { log } from "./lib/util.mjs";
@@ -75,8 +75,15 @@ async function main() {
       const content = await readFile(path, "utf8");
       let rep = null, generated_at = null;
       try { rep = JSON.parse(content); generated_at = rep?.meta?.generated_at || null; } catch { /* keep null */ }
+      // Best-effort partial marker (written by finalize when some fields were unavailable/blanked).
+      let partial = null;
+      try { partial = JSON.parse(await readFile(join(dirname(path), "partial.json"), "utf8")); } catch { /* not partial */ }
+      const isPartial = !!(partial && partial.partial);
       await kvPut(`report:${slug}`, content);
-      await kvPut(`status:${slug}`, JSON.stringify({ state: "done", stage: "done", updated_at: new Date().toISOString(), generated_at, message: "Report ready." }));
+      const doneStatus = { state: "done", stage: "done", updated_at: new Date().toISOString(), generated_at, message: isPartial ? "Report ready — some data was unavailable and left blank." : "Report ready." };
+      if (isPartial) { doneStatus.partial = true; doneStatus.degraded_count = Array.isArray(partial.degraded) ? partial.degraded.length : 0; }
+      await kvPut(`status:${slug}`, JSON.stringify(doneStatus));
+      if (isPartial) log.warn(`published PARTIAL report (${doneStatus.degraded_count} best-effort field(s) unavailable)`);
       if (rep) { try { await writeLibraryCard(slug, rep); log.ok(`KV report-meta:${slug} written (library)`); } catch (e) { log.warn(`library card write failed (non-fatal): ${e.message}`); } }
       log.ok(`KV report:${slug} published (${content.length} bytes) → status done`);
     } else {
