@@ -88,7 +88,7 @@ function renderLanding() {
       <p class="mt-4 text-base sm:text-lg text-slate-500">Institutional-grade earnings-call analysis, one company at a time.</p>
     </div>
 
-    <div class="fade-in max-w-2xl mx-auto">
+    <div class="fade-in max-w-2xl mx-auto relative z-20">
       <div class="card p-2 sm:p-2.5">
         <div class="relative">
           <div class="flex items-center gap-3 rounded-2xl px-4 py-3.5">
@@ -110,7 +110,7 @@ function renderLanding() {
       </div>
     </div>
 
-    <div id="library" class="fade-in max-w-5xl mx-auto mt-14 mb-6"></div>`;
+    <div id="library" class="fade-in max-w-5xl mx-auto mt-14 mb-6 relative z-0"></div>`;
   wireSearch();
   loadLibrary();
   renderIcons();
