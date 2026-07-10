@@ -32,6 +32,7 @@ function makeEnv({ token = "tok", kv = {} } = {}) {
     REPORTS: {
       get: async (k, opt) => { const v = store.get(k); return v == null ? null : (opt && opt.type === "json" ? JSON.parse(v) : v); },
       put: async (k, v) => { store.set(k, String(v)); },
+      list: async ({ prefix = "" } = {}) => ({ keys: [...store.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })), list_complete: true }),
     },
     ASSETS: { fetch: async (req) => {
       if (new URL(req.url).pathname === "/data/universe.json") {
@@ -169,8 +170,9 @@ sres = await (await get(makeEnv(), "/api/search?q=rel")).json(); // no MUNS_TOKE
 ok(sres.ok === false && sres.results.length === 0, "/api/search without MUNS_TOKEN → ok:false, empty (client falls back)");
 ok((await (await get(makeEnv({ token: "t" }), "/api/search?q=r")).json()).results.length === 0, "/api/search: <2 chars → empty");
 
-const repEnv = makeEnv({ kv: { "index:reports": j([{ slug: "a", generated_at: "2026-01-01" }, { slug: "b", generated_at: "2026-06-01" }]) } });
-ok((await (await get(repEnv, "/api/reports")).json()).reports[0].slug === "b", "/api/reports: newest first");
+const repEnv = makeEnv({ kv: { "report-meta:a": j({ slug: "a", generated_at: "2026-01-01" }), "report-meta:b": j({ slug: "b", generated_at: "2026-06-01" }) } });
+const repList = (await (await get(repEnv, "/api/reports")).json()).reports;
+ok(repList.length === 2 && repList[0].slug === "b", "/api/reports: aggregates per-slug cards, newest first");
 
 // analyze derives the slug from the TICKER (unique key), and passes it to the dispatch
 stubDispatchOk(); dispatches = [];

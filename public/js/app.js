@@ -81,10 +81,10 @@ function renderLanding() {
       <div class="inline-flex items-center gap-2 rounded-full bg-white ring-1 ring-slate-100 px-3 py-1 text-xs text-slate-500 shadow-sm mb-6">
         <i data-lucide="sparkles" class="w-3.5 h-3.5 text-fuchsia-500"></i> Powered by the full Munshot pipeline
       </div>
-      <h1 class="font-display text-4xl sm:text-6xl font-bold tracking-tight leading-[1.05]">
+      <h1 class="font-display text-4xl sm:text-5xl font-bold tracking-tight leading-[1.05]">
         <span class="brand-gradient">Concall Deep Dive</span>
       </h1>
-      <p class="mt-4 text-lg text-slate-500">Institutional-grade earnings-call analysis, one company at a time.</p>
+      <p class="mt-4 text-base sm:text-lg text-slate-500">Institutional-grade earnings-call analysis, one company at a time.</p>
     </div>
 
     <div class="fade-in max-w-2xl mx-auto">
@@ -94,11 +94,11 @@ function renderLanding() {
             <i data-lucide="search" class="w-5 h-5 text-slate-400 shrink-0"></i>
             <input id="company-search" type="text" autocomplete="off" role="combobox" aria-expanded="false"
               aria-controls="search-results" aria-autocomplete="list"
-              placeholder="Search any listed company — e.g. Reliance, Navin Fluorine, TCS…"
-              class="w-full bg-transparent outline-none text-lg placeholder:text-slate-400 font-display" />
+              placeholder="Search any listed company"
+              class="w-full bg-transparent outline-none text-base sm:text-lg placeholder:text-slate-400 font-display" />
             <button id="clear-btn" type="button" aria-label="Clear" class="hidden text-slate-400 hover:text-slate-600"><i data-lucide="x" class="w-5 h-5"></i></button>
           </div>
-          <ul id="search-results" role="listbox" class="hidden absolute z-20 mt-2 w-full max-h-80 overflow-auto card p-2"></ul>
+          <ul id="search-results" role="listbox" class="hidden absolute z-40 mt-2 w-full max-h-80 overflow-auto rounded-2xl bg-white p-2 shadow-2xl ring-1 ring-slate-200/70"></ul>
         </div>
       </div>
       <div class="mt-4 flex items-center justify-between gap-4 px-1">
@@ -130,6 +130,7 @@ function wireSearch() {
   document.addEventListener("click", (e) => { if (sEls.results && !sEls.results.contains(e.target) && e.target !== sEls.input) closeList(); });
 }
 function onSearchInput() {
+  search.seq++; // synchronously invalidate any in-flight /api/search response for a prior query
   show(sEls.clear, sEls.input.value.length > 0);
   if (state.selected && sEls.input.value !== state.selected.name) { state.selected = null; sEls.line.textContent = "Pick a stock to begin."; sEls.run.disabled = true; }
 }
@@ -187,7 +188,7 @@ function selectItem(i) {
   sEls.run.disabled = false;
   closeList(); renderIcons();
 }
-function clearSearch() { state.selected = null; sEls.input.value = ""; show(sEls.clear, false); sEls.run.disabled = true; sEls.line.textContent = "Pick a stock to begin."; sEls.input.focus(); closeList(); }
+function clearSearch() { search.seq++; state.selected = null; sEls.input.value = ""; show(sEls.clear, false); sEls.run.disabled = true; sEls.line.textContent = "Pick a stock to begin."; sEls.input.focus(); closeList(); }
 
 // ── saved-runs library ──
 const CONVICTION_CHIP = {
@@ -378,7 +379,9 @@ function finishLoading(t, report, token) {
 function failLoading(t, message, timeout = false) {
   stopCreep(); state.running = false; if (!timeout) clearInflight();
   showScreen("loading");
-  screens.loading.innerHTML = errorCardHtml(t.name, message, () => startAnalyze(t, true), () => goLanding());
+  // Retry is NON-forced: it reattaches to a still-running job (timeout) or re-dispatches a failed one,
+  // and never cancels a near-complete run (force would, via the workflow's cancel-in-progress group).
+  screens.loading.innerHTML = errorCardHtml(t.name, message, () => startAnalyze(t, false), () => goLanding());
   renderIcons();
 }
 
@@ -453,15 +456,22 @@ function errorCardHtml(name, message, onRetry, onBack) {
 // ══════════════════════════════════════════════════════════════════════════════
 // BOOT
 // ══════════════════════════════════════════════════════════════════════════════
+const RESUME_MAX_AGE_MS = 30 * 60 * 1000; // an in-flight record older than this is abandoned, not resumed
+
 async function resumeIfInFlight() {
   const run = loadInflight();
   if (!run || !run.slug) return false;
+  const ageMs = run.startedAt ? Date.now() - run.startedAt : Infinity;
+  if (ageMs > RESUME_MAX_AGE_MS) { clearInflight(); return false; } // stale record → don't resume
   const t = { name: run.company || run.slug, ticker: run.ticker || "", slug: run.slug };
   try {
     const decision = await api.reportTick(run.slug);
     if (decision.action === "done") { clearInflight(); mountReport(decision.report, t); return true; }
     if (decision.action === "error") { clearInflight(); return false; }
-    // still running → resume the loading screen + poll
+    // Resume the loader ONLY if a run is genuinely active. "unknown" means no job is running (e.g. it
+    // finished + fell out of KV, or never started) — don't strand the user on a loader that polls to
+    // timeout; drop the record and land them on the library.
+    if (decision.status !== "queued" && decision.status !== "running") { clearInflight(); return false; }
     const token = ++runToken; loading.token = token; state.running = true; loading.target = t; loading.displayPct = 0; loading.stageKey = decision.stage || "queued";
     renderLoading(t); if (decision.stage) setStage(decision.stage);
     pollLoop(t, token);

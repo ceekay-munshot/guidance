@@ -182,8 +182,17 @@ async function handleSearch(env, url) {
 }
 
 // ── GET /api/reports — the saved-runs library (newest first) ──
+// Aggregates the per-slug `report-meta:<slug>` cards (race-free writes) rather than a shared array.
 async function handleReports(env) {
-  return json({ ok: true, reports: sortReports(await kvJson(env, "index:reports")) });
+  if (!env.REPORTS || !env.REPORTS.list) return json({ ok: true, reports: [] });
+  const out = [];
+  let cursor;
+  do {
+    const page = await env.REPORTS.list({ prefix: "report-meta:", cursor });
+    for (const k of page.keys || []) { const e = await kvJson(env, k.name); if (e) out.push(e); }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return json({ ok: true, reports: sortReports(out) });
 }
 
 /**

@@ -15,7 +15,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { kvPut, kvGet, kvConfigured } from "./lib/kv.mjs";
+import { kvPut, kvConfigured } from "./lib/kv.mjs";
 import { log } from "./lib/util.mjs";
 
 const OUT_ROOT = fileURLToPath(new URL("./out/", import.meta.url));
@@ -31,8 +31,13 @@ async function findReportJson() {
   return null;
 }
 
-/** Upsert this run into index:reports (read-modify-write), newest first. Best-effort. */
-async function upsertIndex(slug, rep) {
+/**
+ * Write this run's library card under its OWN key (report-meta:<slug>) — no read-modify-write of a
+ * shared array, so two DIFFERENT companies finishing at once can't clobber each other's entry (the
+ * workflow concurrency group is per-slug, so cross-slug runs are concurrent). The Worker's
+ * /api/reports lists these keys. Best-effort.
+ */
+async function writeLibraryCard(slug, rep) {
   const entry = {
     slug,
     company: rep.meta?.company || null,
@@ -41,13 +46,7 @@ async function upsertIndex(slug, rep) {
     conviction: rep.next_steps?.conviction || null,
     generated_at: rep.meta?.generated_at || null,
   };
-  let index = [];
-  try { const raw = await kvGet("index:reports"); if (raw) index = JSON.parse(raw); } catch { /* start fresh */ }
-  if (!Array.isArray(index)) index = [];
-  index = index.filter((e) => e && e.slug !== slug);
-  index.unshift(entry);
-  index.sort((a, b) => String(b.generated_at || "").localeCompare(String(a.generated_at || "")));
-  await kvPut("index:reports", JSON.stringify(index));
+  await kvPut(`report-meta:${slug}`, JSON.stringify(entry));
 }
 
 async function main() {
@@ -78,7 +77,7 @@ async function main() {
       try { rep = JSON.parse(content); generated_at = rep?.meta?.generated_at || null; } catch { /* keep null */ }
       await kvPut(`report:${slug}`, content);
       await kvPut(`status:${slug}`, JSON.stringify({ state: "done", stage: "done", updated_at: new Date().toISOString(), generated_at, message: "Report ready." }));
-      if (rep) { try { await upsertIndex(slug, rep); log.ok(`KV index:reports upserted "${slug}"`); } catch (e) { log.warn(`index upsert failed (non-fatal): ${e.message}`); } }
+      if (rep) { try { await writeLibraryCard(slug, rep); log.ok(`KV report-meta:${slug} written (library)`); } catch (e) { log.warn(`library card write failed (non-fatal): ${e.message}`); } }
       log.ok(`KV report:${slug} published (${content.length} bytes) → status done`);
     } else {
       log.err(`unknown command "${cmd}"`); process.exitCode = 1;
