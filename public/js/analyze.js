@@ -32,7 +32,7 @@ export function resolveTarget(selected, inputText) {
  */
 export function pollDecision(body) {
   const st = body && body.status;
-  if (st === "done" && body.report) return { action: "done", report: body.report };
+  if (st === "done" && body.report) return { action: "done", report: body.report, partial: body.partial === true };
   if (st === "error") return { action: "error", message: body.error || body.message || "Analysis failed." };
   if (st === "queued" || st === "running" || st === "unknown") return { action: "wait", status: st, stage: body.stage };
   return { action: "error", message: "Unexpected response from the server." };

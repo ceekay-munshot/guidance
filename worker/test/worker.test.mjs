@@ -139,6 +139,13 @@ ok(body.status === "running", "done status but only an OLD report readable (KV l
 body = await (await get(makeEnv({ kv: { [`status:${SLUG}`]: doneStatus } }), `/api/report?slug=${SLUG}`)).json();
 ok(body.status === "running", "done status but report not yet visible (first-run lag) → keep polling");
 
+// best-effort partial: a done status carrying partial:true passes the flag through on the report response
+const partialStatus = j({ state: "done", updated_at: T, generated_at: T, partial: true, degraded_count: 3 });
+body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j({ meta: { slug: SLUG, generated_at: T } }), [`status:${SLUG}`]: partialStatus } }), `/api/report?slug=${SLUG}`)).json();
+ok(body.status === "done" && body.report && body.partial === true, "partial done status → report served with partial:true");
+body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j({ meta: { slug: SLUG, generated_at: T } }), [`status:${SLUG}`]: doneStatus } }), `/api/report?slug=${SLUG}`)).json();
+ok(body.status === "done" && body.partial === false, "non-partial done status → partial:false");
+
 // a failed refresh NEWER than the cached report surfaces the error (doesn't hide behind stale data)
 body = await (await get(makeEnv({ kv: { [`report:${SLUG}`]: j(staleReport), [`status:${SLUG}`]: j({ state: "error", updated_at: nowIso(), message: "run failed" }) } }), `/api/report?slug=${SLUG}`)).json();
 ok(body.status === "error" && /run failed/.test(body.error), "failed refresh (newer than report) → error, not the stale report");

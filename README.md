@@ -92,6 +92,17 @@ KV; the **report schema is the single contract** (`public/data/report.schema.jso
 off. KV is the source of truth — reports are not committed back to the repo. A report is served from
 cache while newer than `FRESH_DAYS` (14); the report’s **Regenerate** button re-runs past the cache.
 
+### Best-effort partial reports
+
+A single unavailable/odd field never discards a whole analysis. At the finalize gate, if the complete
+report isn’t schema-valid, `pipeline/lib/salvage.mjs` blanks/drops **only best-effort fields**
+(a segment with an undisclosed margin, an “n.m.” multiple for a loss-making company, a malformed
+concall item, an empty section) and publishes the rest, flagged **partial** — the report screen shows
+a small “some data was unavailable” note and renders the gaps as “—”/“n.m.”. It still **hard-fails**
+when something *load-bearing* is broken (company identity, price inputs, the financial model, the
+verdict, the takeaways) — because a confidently-wrong number in an investment note is worse than a
+visible gap. Every degraded field is logged in the Action and never silently faked.
+
 Canonical slug = `slugify(ticker)` (server-derived) so one stock maps to exactly one KV key,
 regardless of how its name is typed — and a client can never poison another company’s cache.
 
