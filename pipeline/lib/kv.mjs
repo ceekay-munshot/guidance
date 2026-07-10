@@ -29,3 +29,12 @@ export async function kvPut(key, value, env = process.env) {
   }
   if (!res.ok) throw new Error(`KV PUT ${key} → HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
 }
+
+/** GET a key's raw string value, or null if absent (404). Throws on other errors. */
+export async function kvGet(key, env = process.env) {
+  const url = `${CF_BASE}/accounts/${env.CF_ACCOUNT_ID}/storage/kv/namespaces/${env.CF_KV_NAMESPACE_ID}/values/${encodeURIComponent(key)}`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${env.CF_API_TOKEN}` } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`KV GET ${key} → HTTP ${res.status}`);
+  return res.text();
+}

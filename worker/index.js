@@ -6,19 +6,22 @@
  *   dispatches the GitHub Action → the Action writes the report to KV → the client
  *   polls GET /api/report until it's done and renders it.
  *
- *   GET  /api/universe       → company universe list (public/data/universe.json)
+ *   GET  /api/search?q=…     → { results:[{ticker,name,sector,country}] }  (Muns proxy, India only)
+ *   GET  /api/universe       → company universe list (public/data/universe.json)  (search fallback)
+ *   GET  /api/reports        → { reports:[…] } — the saved-runs library, newest first
  *   POST /api/analyze        → { status: "done"|"queued"|"running"|"error" }
- *   GET  /api/report?slug=…  → { status, report? }
+ *   GET  /api/report?slug=…  → { status, stage?, report? }
  *   (anything else)          → env.ASSETS.fetch(request)
  *
  * Bindings (wrangler.jsonc):
  *   ASSETS   static-asset fetcher for ./public.
  *   REPORTS  KV namespace. Keys: report:<slug> (finished report JSON, has meta.generated_at),
- *            status:<slug> ({ state, updated_at, message }). The Action writes both via the
- *            Cloudflare KV REST API; the Worker READS them and writes only status:<slug>="queued".
+ *            status:<slug> ({ state, stage?, updated_at, message }), index:reports (library array).
+ *            The Action writes them via the KV REST API; the Worker READS them + writes status="queued".
  * Vars (wrangler.jsonc): GITHUB_REPO ("owner/repo"), GITHUB_BRANCH ("main").
- * Secret (wrangler secret put): GITHUB_TOKEN — fine-grained PAT with Actions read/write.
- *   The token is used ONLY server-side for workflow_dispatch and is never returned in a response.
+ * Secrets (wrangler secret put): GITHUB_TOKEN (Actions read/write, for workflow_dispatch),
+ *   MUNS_TOKEN (bearer for the Muns stock-search API). Both are used ONLY server-side and never
+ *   returned in a response.
  * ---------------------------------------------------------------------------
  */
 
@@ -138,6 +141,52 @@ async function handleUniverse(env, request) {
 }
 
 /**
+ * Transform the Muns /stock/search response into a clean array, keeping ONLY India-listed stocks
+ * (the pipeline resolves via Screener/BSE/NSE). `results` is an object keyed by ticker whose value
+ * is [country, name, sector]; malformed/other-country/blank entries are dropped, null sector kept.
+ */
+export function munsToResults(payload) {
+  const results = payload && payload.data && payload.data.results;
+  if (!results || typeof results !== "object") return [];
+  const out = [];
+  for (const [ticker, val] of Object.entries(results)) {
+    if (!Array.isArray(val)) continue;
+    const [country, name, sector] = val;
+    if (country !== "India" || !ticker || !name) continue;
+    out.push({ ticker: String(ticker), name: String(name), sector: sector == null ? null : String(sector), country: "India" });
+  }
+  return out;
+}
+
+/** Sort a reports-index array newest-first by generated_at (stable, tolerant of missing dates). */
+export function sortReports(list) {
+  return (Array.isArray(list) ? list.slice() : []).sort((a, b) => String(b && b.generated_at || "").localeCompare(String(a && a.generated_at || "")));
+}
+
+// ── GET /api/search?q=… — Muns stock search, proxied so MUNS_TOKEN stays server-side ──
+async function handleSearch(env, url) {
+  const q = (url.searchParams.get("q") || "").trim();
+  if (q.length < 2) return json({ ok: true, results: [] });
+  if (!env.MUNS_TOKEN) return json({ ok: false, results: [], error: "search not configured" }); // client falls back to universe.json
+  try {
+    const res = await fetch("https://birdnest.muns.io/stock/search", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.MUNS_TOKEN}`, "Content-Type": "application/json", accept: "*/*" },
+      body: JSON.stringify({ query: q, user_index: 124 }),
+    });
+    if (!res.ok) return json({ ok: false, results: [], error: `search HTTP ${res.status}` });
+    return json({ ok: true, results: munsToResults(await res.json()) });
+  } catch {
+    return json({ ok: false, results: [], error: "search failed" });
+  }
+}
+
+// ── GET /api/reports — the saved-runs library (newest first) ──
+async function handleReports(env) {
+  return json({ ok: true, reports: sortReports(await kvJson(env, "index:reports")) });
+}
+
+/**
  * POST /api/analyze { company, ticker?, force? }
  *   fresh report (and not forced) → { status: "done" } (client GETs it).
  *   a job already in flight        → return that state (no duplicate dispatch), unless it's stale/forced.
@@ -150,8 +199,11 @@ async function handleAnalyze(env, request) {
   let body = {};
   try { body = (await request.json()) || {}; } catch { /* empty/invalid body */ }
   const company = String(body.company || body.ticker || "").trim();
+  const ticker = String(body.ticker || "").trim();
   if (!company) return json({ ok: false, status: "error", error: "missing company" }, 400);
-  const slug = await canonicalSlug(env, request, company); // server-side; NOT body.slug
+  // The ticker is unique → one canonical KV key per stock, regardless of name spelling. Derived
+  // server-side (never body.slug). Free text with no ticker falls back to a universe/name canonical.
+  const slug = ticker ? slugify(ticker) : await canonicalSlug(env, request, company);
   if (!slug || slug === "company") return json({ ok: false, status: "error", error: "missing company" }, 400);
   const force = body.force === true;
 
@@ -165,14 +217,14 @@ async function handleAnalyze(env, request) {
   // would be masked by the stale report and "Try again" could never start a replacement.
   if (report && isFresh(report) && !force && !newerError && !inFlightFresh) return json({ ok: true, slug, status: "done" });
   // A live run blocks a duplicate dispatch — but a stuck (stale) status, or an explicit force, re-runs.
-  if (inFlightFresh && !force) return json({ ok: true, slug, status: status.state, message: status.message });
+  if (inFlightFresh && !force) return json({ ok: true, slug, status: status.state, stage: status.stage, message: status.message });
 
   if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) {
     return json({ ok: false, status: "error", error: "analysis is not configured on the server" }, 503);
   }
-  if (env.REPORTS) await env.REPORTS.put(`status:${slug}`, JSON.stringify({ state: "queued", updated_at: new Date().toISOString(), message: "Dispatching run…" }));
+  if (env.REPORTS) await env.REPORTS.put(`status:${slug}`, JSON.stringify({ state: "queued", stage: "queued", updated_at: new Date().toISOString(), message: "Starting the analysis…" }));
   try {
-    await dispatchWorkflow(env, { company, slug });
+    await dispatchWorkflow(env, { company, ticker, slug });
   } catch (err) {
     if (env.REPORTS) await env.REPORTS.put(`status:${slug}`, JSON.stringify({ state: "error", updated_at: new Date().toISOString(), message: "Could not start the analysis run." }));
     return json({ ok: false, slug, status: "error", error: "could not start analysis", detail: String(err && err.message || err) }, 502);
@@ -192,7 +244,7 @@ async function handleReport(env, request, url) {
   if (!slug || slug === "company") return json({ ok: false, status: "error", error: "missing slug" }, 400);
 
   const [report, status] = await Promise.all([kvJson(env, `report:${slug}`), kvJson(env, `status:${slug}`)]);
-  if (isInFlight(status) && !isStatusStale(status)) return json({ ok: true, slug, status: status.state, message: status.message });
+  if (isInFlight(status) && !isStatusStale(status)) return json({ ok: true, slug, status: status.state, stage: status.stage, message: status.message });
 
   const reportT = report && report.meta && report.meta.generated_at ? Date.parse(report.meta.generated_at) : -Infinity;
   const statusT = status && status.updated_at ? Date.parse(status.updated_at) : -Infinity;
@@ -204,7 +256,7 @@ async function handleReport(env, request, url) {
   const doneAt = status && status.state === "done" && status.generated_at ? Date.parse(status.generated_at) : NaN;
   if (Number.isFinite(doneAt)) {
     if (report && reportT >= doneAt) return json({ ok: true, slug, status: "done", report });
-    return json({ ok: true, slug, status: "running", message: "Finishing up…" });
+    return json({ ok: true, slug, status: "running", stage: "finalize", message: "Finishing up…" });
   }
   if (report) return json({ ok: true, slug, status: "done", report }); // report with no done-status to gate on
   if (status && status.state === "error") return json({ ok: false, slug, status: "error", error: status.message || "Analysis failed." });
@@ -213,7 +265,9 @@ async function handleReport(env, request, url) {
 
 async function handleApi(env, request, url) {
   try {
+    if (url.pathname === "/api/search" && request.method === "GET") return await handleSearch(env, url);
     if (url.pathname === "/api/universe" && request.method === "GET") return await handleUniverse(env, request);
+    if (url.pathname === "/api/reports" && request.method === "GET") return await handleReports(env);
     if (url.pathname === "/api/analyze" && request.method === "POST") return await handleAnalyze(env, request);
     if (url.pathname === "/api/report" && request.method === "GET") return await handleReport(env, request, url);
     return json({ ok: false, error: "not found" }, 404);
@@ -232,4 +286,4 @@ export default {
 };
 
 // Exported for offline unit tests (worker/test/worker.test.mjs). Not used by the runtime.
-export const __test = { slugify, isFresh, isInFlight, isStatusStale, FRESH_DAYS, STALE_STATUS_MS };
+export const __test = { slugify, isFresh, isInFlight, isStatusStale, munsToResults, sortReports, FRESH_DAYS, STALE_STATUS_MS };

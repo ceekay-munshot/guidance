@@ -1,72 +1,91 @@
 #!/usr/bin/env node
-// kv-put.mjs — STEP 10: publish pipeline results to Cloudflare KV so the Worker can serve them.
-// Called by fetch-company.yml at three points:
-//   node pipeline/kv-put.mjs status <slug> running "Analyzing <company>…"   (before the run)
-//   node pipeline/kv-put.mjs report <slug>                                  (on success)
-//   node pipeline/kv-put.mjs status <slug> error "message"                  (on failure)
+// kv-put.mjs — STEP 10/11: publish pipeline results + progress to Cloudflare KV for the Worker.
+// Called by fetch-company.yml:
+//   node pipeline/kv-put.mjs progress <slug> <stage>   before each stage (cosmetic; best-effort)
+//   node pipeline/kv-put.mjs report   <slug>           on success (publishes report + library index)
+//   node pipeline/kv-put.mjs error    <slug> "message" on failure  (best-effort)
 //
-// Keys: status:<slug> = { state, updated_at, message }; report:<slug> = the finished report JSON.
-// The `report` command finds the single pipeline/out/*/report.json (the run's output) and, after
-// PUT-ing it, also flips status:<slug> to "done". Missing CF creds → a clear WARN + exit 0, so a
-// run without KV configured still completes (and uploads its artifact) rather than failing.
+// Keys: status:<slug> = { state, stage?, updated_at, message? }; report:<slug> = the report JSON;
+//       index:reports = [{ slug, company, ticker, sector, conviction, generated_at }] (library).
+// FAILURE SEMANTICS: `report` is fail-loud (missing creds → non-zero: it is the ONLY path that turns
+// the Worker's queued status into a visible report, so a green-but-silent finish would strand the
+// client). `progress`/`error` are best-effort (cosmetic) and never abort the run. A blank slug
+// (manual run) is a no-op everywhere.
 
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { kvPut, kvConfigured } from "./lib/kv.mjs";
+import { kvPut, kvGet, kvConfigured } from "./lib/kv.mjs";
 import { log } from "./lib/util.mjs";
 
 const OUT_ROOT = fileURLToPath(new URL("./out/", import.meta.url));
 
-/** Locate the single report.json this run produced (the pipeline's dir slug may differ from <slug>). */
 async function findReportJson() {
   let entries = [];
   try { entries = await readdir(OUT_ROOT, { withFileTypes: true }); } catch { return null; }
-  const hits = [];
   for (const e of entries) {
     if (!e.isDirectory()) continue;
     const p = join(OUT_ROOT, e.name, "report.json");
-    try { await readFile(p, "utf8"); hits.push(p); } catch { /* no report here */ }
+    try { await readFile(p, "utf8"); return p; } catch { /* keep looking */ }
   }
-  return hits[0] || null; // one company per run → one report.json
+  return null;
+}
+
+/** Upsert this run into index:reports (read-modify-write), newest first. Best-effort. */
+async function upsertIndex(slug, rep) {
+  const entry = {
+    slug,
+    company: rep.meta?.company || null,
+    ticker: rep.meta?.ticker || null,
+    sector: rep.about?.sector || null,
+    conviction: rep.next_steps?.conviction || null,
+    generated_at: rep.meta?.generated_at || null,
+  };
+  let index = [];
+  try { const raw = await kvGet("index:reports"); if (raw) index = JSON.parse(raw); } catch { /* start fresh */ }
+  if (!Array.isArray(index)) index = [];
+  index = index.filter((e) => e && e.slug !== slug);
+  index.unshift(entry);
+  index.sort((a, b) => String(b.generated_at || "").localeCompare(String(a.generated_at || "")));
+  await kvPut("index:reports", JSON.stringify(index));
 }
 
 async function main() {
   const [cmd, slug, arg3, arg4] = process.argv.slice(2);
-  if (!cmd || !slug) { log.err("usage: kv-put.mjs <status|report> <slug> [state] [message]"); process.exitCode = 1; return; }
+  if (!cmd) { log.err("usage: kv-put.mjs <progress|report|error> <slug> [stage|message]"); process.exitCode = 1; return; }
+  if (!slug) { log.info(`kv-put ${cmd}: blank slug (manual run) — skipping KV`); return; } // no-op for manual runs
 
-  // kv-put only runs for LIVE (slugged) runs — the Worker's queued status becomes a visible report
-  // ONLY through these writes. Missing creds must therefore FAIL LOUDLY (red job), not finish green
-  // while the client polls to timeout. Manual runs pass a blank slug and skip these steps entirely.
+  const bestEffort = cmd === "progress" || cmd === "error";
   if (!kvConfigured()) {
+    if (bestEffort) { log.warn(`CF KV not configured — skipping best-effort ${cmd} for "${slug}"`); return; }
     log.err(`CF KV not configured (need CF_ACCOUNT_ID / CF_KV_NAMESPACE_ID / CF_API_TOKEN) — cannot ${cmd} "${slug}". A live run requires the three Cloudflare Actions secrets.`);
-    process.exitCode = 1;
-    return;
+    process.exitCode = 1; return;
   }
 
   try {
-    if (cmd === "status") {
-      const state = arg3 || "running";
-      const payload = { state, updated_at: new Date().toISOString(), message: arg4 || "" };
-      await kvPut(`status:${slug}`, JSON.stringify(payload));
-      log.ok(`KV status:${slug} = ${state}`);
+    if (cmd === "progress") {
+      const stage = arg3 || "running";
+      await kvPut(`status:${slug}`, JSON.stringify({ state: "running", stage, updated_at: new Date().toISOString() }));
+      log.ok(`KV status:${slug} = running (${stage})`);
+    } else if (cmd === "error") {
+      await kvPut(`status:${slug}`, JSON.stringify({ state: "error", updated_at: new Date().toISOString(), message: arg4 || arg3 || "Analysis failed." }));
+      log.ok(`KV status:${slug} = error`);
     } else if (cmd === "report") {
       const path = await findReportJson();
       if (!path) { log.err(`no report.json under pipeline/out/ to publish for "${slug}"`); process.exitCode = 1; return; }
       const content = await readFile(path, "utf8");
-      // Stamp the report's own generated_at onto the done status so the Worker only serves the report
-      // once it has propagated past KV's eventual-consistency lag (see handleReport's done gate).
-      let generated_at = null;
-      try { generated_at = JSON.parse(content)?.meta?.generated_at || null; } catch { /* keep null */ }
+      let rep = null, generated_at = null;
+      try { rep = JSON.parse(content); generated_at = rep?.meta?.generated_at || null; } catch { /* keep null */ }
       await kvPut(`report:${slug}`, content);
-      await kvPut(`status:${slug}`, JSON.stringify({ state: "done", updated_at: new Date().toISOString(), generated_at, message: "Report ready." }));
+      await kvPut(`status:${slug}`, JSON.stringify({ state: "done", stage: "done", updated_at: new Date().toISOString(), generated_at, message: "Report ready." }));
+      if (rep) { try { await upsertIndex(slug, rep); log.ok(`KV index:reports upserted "${slug}"`); } catch (e) { log.warn(`index upsert failed (non-fatal): ${e.message}`); } }
       log.ok(`KV report:${slug} published (${content.length} bytes) → status done`);
     } else {
       log.err(`unknown command "${cmd}"`); process.exitCode = 1;
     }
   } catch (e) {
-    log.err(`KV ${cmd} failed: ${e.message}`);
-    process.exitCode = 1;
+    if (bestEffort) { log.warn(`KV ${cmd} failed (non-fatal): ${e.message}`); return; }
+    log.err(`KV ${cmd} failed: ${e.message}`); process.exitCode = 1;
   }
 }
 
