@@ -50,7 +50,7 @@
             "cmp_date": { "type": "string", "format": "date", "description": "Date CMP was captured." },
             "shares_out_cr": { "type": "number", "description": "Shares outstanding in crores." },
             "market_cap_cr": { "type": "number", "description": "Market capitalisation in INR crore." },
-            "net_debt_cr": { "type": "number", "description": "Net debt (negative if net cash) in INR crore." }
+            "net_debt_cr": { "type": ["number", "null"], "description": "Net debt (negative if net cash) in INR crore. null when Screener doesn't surface it (self-check treats it as non-fatal); the valuation math then treats EV net debt as 0 and the UI/exports show '—'." }
           }
         }
       }
@@ -334,8 +334,8 @@
           "additionalProperties": false,
           "required": ["fy27e", "fy28e"],
           "properties": {
-            "fy27e": { "type": "number" },
-            "fy28e": { "type": "number" }
+            "fy27e": { "type": ["number", "null"], "description": "null = 'n.m.' (denominator ≤ 0, e.g. loss-making / negative EBITDA); the UI and exports render null as 'n.m.'." },
+            "fy28e": { "type": ["number", "null"] }
           }
         },
         "ev_ebitda": {
@@ -343,8 +343,8 @@
           "additionalProperties": false,
           "required": ["fy27e", "fy28e"],
           "properties": {
-            "fy27e": { "type": "number" },
-            "fy28e": { "type": "number" }
+            "fy27e": { "type": ["number", "null"], "description": "null = 'n.m.' (denominator ≤ 0, e.g. loss-making / negative EBITDA); the UI and exports render null as 'n.m.'." },
+            "fy28e": { "type": ["number", "null"] }
           }
         },
         "price_sales": {
@@ -352,8 +352,8 @@
           "additionalProperties": false,
           "required": ["fy27e", "fy28e"],
           "properties": {
-            "fy27e": { "type": "number" },
-            "fy28e": { "type": "number" }
+            "fy27e": { "type": ["number", "null"], "description": "null = 'n.m.' (denominator ≤ 0, e.g. loss-making / negative EBITDA); the UI and exports render null as 'n.m.'." },
+            "fy28e": { "type": ["number", "null"] }
           }
         },
         "sanity_check": { "type": "string", "description": "One paragraph reconciling the multiples to the story — is the price already pricing in the guidance?" }

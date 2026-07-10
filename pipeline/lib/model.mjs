@@ -32,8 +32,9 @@ export function computeForecast(fy26a, a) {
 /**
  * Valuation multiples with the frontend's EXACT definitions: market_cap = cmp × shares_out_cr;
  * ev = market_cap + net_debt_cr; P/E = mc/PAT; EV/EBITDA = ev/EBITDA; P/S = mc/Revenue. A multiple
- * whose denominator ≤ 0 is "n.m." → null (the schema requires a number, so a genuine n.m. seed will
- * fail validation loudly rather than be faked). Rounded to 1 dp to match the sample. Returns the
+ * whose denominator ≤ 0 is "n.m." → null (schema-valid: valuation multiples are number|null, so a
+ * genuine n.m. — loss-making / negative EBITDA — validates and renders as "n.m."). Rounded to 1 dp
+ * to match the sample. Returns the
  * three schema multiples plus market_cap/ev for the sanity-check text (not stored in report.valuation).
  */
 export function computeValuation(inputs, f) {

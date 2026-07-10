@@ -119,7 +119,11 @@ async function main() {
     const latest = parsed.concalls.entries[0] || null;
     const parsedQ = latest ? quarterFromTitle(latest.title) || quarterFromDate({ y: latest.y, m: latest.m }).quarter || null : null;
     const expQ = expectedQuarter(fetched_at);
-    const quarter = parsedQ;
+    // meta.quarter is required to match ^Q[1-4]FY[0-9]{2}$ — it must never be null. When the concall's
+    // quarter can't be parsed, fall back to the EXPECTED current quarter (not an older one) and leave
+    // quarter_confirmed=false so the UI shows "(quarter unconfirmed)" — a graceful degrade, not a hard
+    // finalize-gate failure. expectedQuarter() is date-derived and always pattern-valid.
+    const quarter = parsedQ || expQ;
     const quarter_confirmed = !!parsedQ && parsedQ === expQ;
     if (latest) log.ok(`latest concall: ${latest.date || "?"} → ${parsedQ || "?"} (expected ${expQ}) · confirmed=${quarter_confirmed}`);
     if (parsedQ && expQ && parsedQ !== expQ) diagnostics.notes.push(`latest posted concall is ${parsedQ}, but ${expQ} was expected by now — the expected quarter may not be posted yet`);

@@ -115,5 +115,14 @@ const stringMargin = JSON.parse(JSON.stringify(clean));
 stringMargin.about.margin_by_segment.push({ segment: "Bad Div", ebitda_margin: "not disclosed" });
 ok(!validateFull(stringMargin, schema).ok, "full validation REJECTS a string segment margin (the old bug shape)");
 
+// regression (loss-making company): a genuine n.m. multiple is null — must pass the strict gate.
+const nm = JSON.parse(JSON.stringify(clean));
+nm.valuation.pe = { fy27e: null, fy28e: null };
+nm.valuation.ev_ebitda = { fy27e: null, fy28e: null };
+ok(validateFull(nm, schema).ok, "full validation ACCEPTS null valuation multiples (n.m. / loss-making)");
+const strMult = JSON.parse(JSON.stringify(clean));
+strMult.valuation.pe = { fy27e: "n.m.", fy28e: "n.m." };
+ok(!validateFull(strMult, schema).ok, "full validation REJECTS a non-number, non-null multiple");
+
 console.log(fails === 0 ? "\nMODEL + FINALIZE (Step 9) OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);
 process.exit(fails ? 1 : 0);
