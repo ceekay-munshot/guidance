@@ -70,7 +70,10 @@ export function salvageReport(report, schema) {
     const node = schemaAt(schema, path);
     if (!node || !node.items) continue;
     const list = get(r, path);
-    if (!Array.isArray(list)) { setPath(r, path, []); if (list !== undefined) degraded.push(`${path}: unavailable`); continue; }
+    // A missing (undefined) or wrong-typed best-effort array is materialized to [] AND recorded — an
+    // absent required section means data was unavailable, so the report must read as partial, not
+    // silently "complete" (no marker / no client note / no Action log).
+    if (!Array.isArray(list)) { setPath(r, path, []); degraded.push(`${path}: unavailable`); continue; }
     const kept = list.filter((it) => validate(node.items, it, schema).length === 0);
     if (kept.length !== list.length) { setPath(r, path, kept); degraded.push(`${path}: dropped ${list.length - kept.length} malformed item(s)`); }
   }
