@@ -110,7 +110,7 @@ export function assembleModel(report, fy26a, llm, ctx, { generated_at, positiveT
   const richness = assessValuationRichness(v.pe.fy27e, ctx || {});
   const sanity = buildSanityCheck({ valuation: v, inputs: out.meta?.inputs || {}, currentPe: ctx ? numOr(ctx.current_pe) : null, richness, positiveTone: !!positiveTone });
   out.valuation = { pe: v.pe, ev_ebitda: v.ev_ebitda, price_sales: v.price_sales, sanity_check: sanity };
-  if (v.pe.fy27e == null || v.ev_ebitda.fy27e == null) warnings.push("a FY27E multiple is n.m. (denominator ≤ 0) — full-report validation will fail; the company may be loss-making");
+  if (v.pe.fy27e == null || v.ev_ebitda.fy27e == null) warnings.push("a FY27E multiple is n.m. (denominator ≤ 0) — the company may be loss-making; stored as null and rendered 'n.m.' (schema-valid)");
 
   // G — next steps.
   out.next_steps = {
