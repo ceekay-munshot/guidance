@@ -34,6 +34,11 @@ on:
         required: false
         default: ""
         type: string
+      ticker:
+        description: "Ticker (set by the Worker; used to resolve on Screener more reliably)"
+        required: false
+        default: ""
+        type: string
       run_extract:
         description: "Run the LLM extractor (Step 7) after fetch"
         required: false
@@ -74,25 +79,23 @@ jobs:
   fetch:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Job-level env so every step (incl. each stage's best-effort progress ping and fetch-company's
+    # own transcript ping) can write status:<slug> to KV. SLUG is blank for manual runs → all KV
+    # writes no-op. Secrets in env are masked, never logged.
+    env:
+      CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      SLUG: ${{ inputs.slug }}
+      # Resolve on Screener by ticker when the Worker supplied one (more reliable), else the name.
+      COMPANY: ${{ inputs.company }}
+      RESOLVE_QUERY: ${{ inputs.ticker != '' && inputs.ticker || inputs.company }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      # Step 10: tell the Worker the run has started (client shows "Analyzing…"). Early so feedback
-      # is fast; never aborts the run on a KV hiccup. No-op when slug is blank (manual runs).
-      - name: KV — mark running (Step 10)
-        if: ${{ inputs.slug != '' }}
-        continue-on-error: true
-        env:
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          SLUG: ${{ inputs.slug }}
-          COMPANY: ${{ inputs.company }}
-        run: node pipeline/kv-put.mjs status "$SLUG" running "Analyzing $COMPANY…"
 
       # Offline unit tests (pure JS, no deps, no network, no LLM). Fail fast if any of
       # prompt-building / assembly / source-tagging / falsifier + verifier / Worker logic regress.
@@ -116,9 +119,11 @@ jobs:
           SCREENER_PASSWORD: ${{ secrets.SCREENER_PASSWORD }}
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
           SCRAPEDO_API_KEY: ${{ secrets.SCRAPEDO_API_KEY }}
-          COMPANY: ${{ inputs.company }}
-        # Untrusted input is passed via env (COMPANY), never interpolated into the shell.
-        run: node pipeline/fetch-company.mjs "$COMPANY"
+        # Untrusted input passed via env, never interpolated into the shell. The `progress` write is
+        # best-effort (no-op without SLUG/creds); fetch-company itself pings "transcript" mid-run.
+        run: |
+          node pipeline/kv-put.mjs progress "$SLUG" resolve
+          node pipeline/fetch-company.mjs "$RESOLVE_QUERY"
 
       # Step 7: extract report Sections B + C into pipeline/out/<slug>/report.json.
       # Gated on run_extract. Secrets stay in env (never echoed); the script never logs the key.
@@ -127,8 +132,9 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          COMPANY: ${{ inputs.company }}
-        run: node pipeline/extract-concall.mjs "$COMPANY"
+        run: |
+          node pipeline/kv-put.mjs progress "$SLUG" extract
+          node pipeline/extract-concall.mjs "$COMPANY"
 
       # Step 8a: web-grounded C.6 risks + Section D thesis / anti-thesis. Uses OpenAI web_search
       # (Firecrawl search as fallback). Augments the same report.json.
@@ -138,8 +144,9 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
-          COMPANY: ${{ inputs.company }}
-        run: node pipeline/research-concall.mjs "$COMPANY"
+        run: |
+          node pipeline/kv-put.mjs progress "$SLUG" research
+          node pipeline/research-concall.mjs "$COMPANY"
 
       # Step 8b: second-model verification of Step 7's transcript claims. Writes verification.json
       # and prunes clear hallucinations from report.json. ANTHROPIC_API_KEY (optional) makes it a
@@ -150,8 +157,9 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           VERIFY_MODEL: ${{ vars.VERIFY_MODEL }}
-          COMPANY: ${{ inputs.company }}
-        run: node pipeline/verify-extract.mjs "$COMPANY"
+        run: |
+          node pipeline/kv-put.mjs progress "$SLUG" verify
+          node pipeline/verify-extract.mjs "$COMPANY"
 
       # Step 9a: financial model — Sections E (rows + assumptions), F (valuation), G (next steps).
       # The LLM supplies assumption levers + prose; the script computes every number deterministically.
@@ -160,8 +168,9 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          COMPANY: ${{ inputs.company }}
-        run: node pipeline/model-report.mjs "$COMPANY"
+        run: |
+          node pipeline/kv-put.mjs progress "$SLUG" model
+          node pipeline/model-report.mjs "$COMPANY"
 
       # Step 9b: key_takeaways synthesis across B–G, then END-TO-END schema validation.
       # This emits the first COMPLETE report.json and fails the job if it doesn't validate.
@@ -170,28 +179,19 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          COMPANY: ${{ inputs.company }}
-        run: node pipeline/finalize-report.mjs "$COMPANY"
+        run: |
+          node pipeline/kv-put.mjs progress "$SLUG" finalize
+          node pipeline/finalize-report.mjs "$COMPANY"
 
-      # Step 10: on success, publish the finished report to KV and flip status → done.
-      - name: KV — publish report (Step 10)
+      # Step 10/11: on success, publish the report to KV, flip status → done, and upsert the library index.
+      - name: KV — publish report
         if: ${{ inputs.slug != '' && success() }}
-        env:
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          SLUG: ${{ inputs.slug }}
         run: node pipeline/kv-put.mjs report "$SLUG"
 
-      # Step 10: on ANY failure above, mark the job errored so the client stops polling and shows why.
-      - name: KV — mark error (Step 10)
+      # Step 10/11: on ANY failure above, mark the job errored so the client stops polling and shows why.
+      - name: KV — mark error
         if: ${{ inputs.slug != '' && failure() }}
-        env:
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          SLUG: ${{ inputs.slug }}
-        run: node pipeline/kv-put.mjs status "$SLUG" error "Couldn't complete the analysis — the company may not be resolvable on Screener, or a step errored. See the Actions log."
+        run: node pipeline/kv-put.mjs error "$SLUG" "Couldn't complete the analysis — the company may not be resolvable on Screener, or a step errored."
 
       - name: Upload bundle artifact
         if: always()

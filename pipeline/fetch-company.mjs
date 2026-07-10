@@ -22,7 +22,15 @@ import { resolveCompany, parseCompanyPage } from "./lib/screener.mjs";
 import { fetchDoc, UA } from "./lib/fetchers.mjs";
 import { extractPdfText } from "./lib/pdf.mjs";
 import { selfCheck } from "./lib/selfcheck.mjs";
+import { kvPut, kvConfigured } from "./lib/kv.mjs";
 import { log, slugify, round, quarterFromDate, quarterFromTitle, expectedQuarter } from "./lib/util.mjs";
+
+/** Best-effort progress ping to KV (Step 11 loading screen). No-op without SLUG/creds; never throws. */
+async function kvProgress(stage) {
+  const slug = process.env.SLUG;
+  if (!slug || !kvConfigured()) return;
+  try { await kvPut(`status:${slug}`, JSON.stringify({ state: "running", stage, updated_at: new Date().toISOString() })); } catch { /* cosmetic */ }
+}
 
 const OUT_ROOT = new URL("./out/", import.meta.url).pathname;
 const TRANSCRIPT_MIN_CHARS = 2000; // below this a "transcript" is almost certainly a fetch failure
@@ -121,6 +129,7 @@ async function main() {
     if (latest && !latest.transcript && latest.ppt) diagnostics.notes.push("PPT-only: latest concall has a PPT but no transcript");
 
     // ── 5. Fetch + extract transcript / PPT text ──
+    await kvProgress("transcript"); // loading screen: "Pulling the latest earnings call & deck…"
     log.step("5. Fetch + extract documents");
     let nseWarmed = false;
     const warmNse = async () => {

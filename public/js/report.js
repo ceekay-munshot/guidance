@@ -65,16 +65,18 @@ function sectionCard(title, bodyHtml) {
   </section>`;
 }
 
-/** Responsive table. `headers` are escaped; `rows` are arrays of pre-built HTML cells. */
-function table(headers, rows) {
-  const head = headers
-    .map((h) => `<th class="text-left font-semibold text-slate-500 text-[11px] uppercase tracking-wide px-3 py-2 whitespace-nowrap">${escapeHtml(h)}</th>`)
-    .join("");
+/**
+ * Institutional table (styled via `.r-table` in index.html). `headers` are escaped; `rows` are
+ * arrays of pre-built HTML cells. `aligns[i] === "num"` right-aligns + monospaces that column
+ * (numbers). Wrapped in an overflow-x container so the page never scrolls sideways on mobile.
+ */
+function table(headers, rows, aligns = []) {
+  const numAt = (i) => (aligns[i] === "num" ? " num" : "");
+  const head = headers.map((h, i) => `<th class="${numAt(i).trim()}">${escapeHtml(h)}</th>`).join("");
   const body = rows
-    .map((cells) => `<tr class="border-t border-slate-100 align-top">${cells.map((c) => `<td class="px-3 py-2.5 text-sm text-slate-700">${c}</td>`).join("")}</tr>`)
+    .map((cells) => `<tr>${cells.map((c, i) => `<td class="${numAt(i).trim()}">${c}</td>`).join("")}</tr>`)
     .join("");
-  // overflow-x wrapper so the page never scrolls sideways on mobile.
-  return `<div class="overflow-x-auto"><table class="w-full min-w-[560px] border-collapse"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="overflow-x-auto"><table class="r-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 const empty = (msg = "—") => `<p class="text-sm text-slate-400">${escapeHtml(msg)}</p>`;
@@ -702,7 +704,8 @@ function financialModelSection(report) {
       cell(r, "fy27e"),
       cell(r, "fy28e"),
       `<span class="text-slate-500">${escapeHtml(dash(r.driver))}</span>`,
-    ])
+    ]),
+    [, "num", "num", "num"] // FY26A / FY27E / FY28E right-aligned
   );
 
   const a = report.financials?.assumptions ?? {};
@@ -766,7 +769,8 @@ function valuationSection(report) {
       [`<span class="font-medium text-slate-800">P/E</span>`, vc("pe", "fy27e", m.valuation.pe.fy27e), vc("pe", "fy28e", m.valuation.pe.fy28e)],
       [`<span class="font-medium text-slate-800">EV/EBITDA</span>`, vc("evebitda", "fy27e", m.valuation.ev_ebitda.fy27e), vc("evebitda", "fy28e", m.valuation.ev_ebitda.fy28e)],
       [`<span class="font-medium text-slate-800">P/S</span>`, vc("ps", "fy27e", m.valuation.price_sales.fy27e), vc("ps", "fy28e", m.valuation.price_sales.fy28e)],
-    ]
+    ],
+    [, "num", "num"]
   );
   const sanity = report.valuation?.sanity_check
     ? `<div class="mt-4 rounded-xl bg-indigo-50/60 ring-1 ring-inset ring-indigo-100 p-4">
@@ -839,24 +843,37 @@ export function hydrateModel(report, root) {
 }
 
 // ── entry point ─────────────────────────────────────────────────────────────
-/** Render the full report as an HTML string. Order: header → B → C.1–C.8 → D → E → F → G. */
+/** The in-report section-nav map (ids must match the anchors below). Consumed by app.js's scroll-spy. */
+export const REPORT_SECTIONS = [
+  { id: "sec-takeaways", label: "Key Takeaways" },
+  { id: "sec-about", label: "About" },
+  { id: "sec-concall", label: "Concall" },
+  { id: "sec-thesis", label: "Thesis" },
+  { id: "sec-model", label: "Model" },
+  { id: "sec-valuation", label: "Valuation" },
+  { id: "sec-verdict", label: "Verdict" },
+];
+
+const anchor = (id, html) => `<div id="${id}">${html}</div>`;
+
+/**
+ * Render the full report as an HTML string. Order: header → B → C.1–C.8 → D → E → F → G.
+ * Sections are wrapped in scroll-spy anchors (REPORT_SECTIONS). `headerStrip` (CMP/mkt-cap/net-debt
+ * + the [PPT-ONLY]/unconfirmed banners) is always included; app.js adds the back/regenerate bar above.
+ */
 export function renderReport(report) {
   const r = report || {};
   return [
     headerStrip(r),
-    keyTakeaways(r),
-    aboutSection(r),          // B
-    guidanceSection(r),       // C.1
-    themesSection(r),         // C.2
-    expansionSection(r),      // C.3
-    thesisTriggersSection(r), // C.4
-    classificationSection(r), // C.5
-    risksSection(r),          // C.6
-    managementToneSection(r), // C.7
-    analystToneSection(r),    // C.8
-    thesisAntiThesisSection(r), // D
-    financialModelSection(r), // E (editable)
-    valuationSection(r),      // F (live)
-    convictionSection(r),     // G
+    anchor("sec-takeaways", keyTakeaways(r)),
+    anchor("sec-about", aboutSection(r)),
+    anchor("sec-concall", [
+      guidanceSection(r), themesSection(r), expansionSection(r), thesisTriggersSection(r),
+      classificationSection(r), risksSection(r), managementToneSection(r), analystToneSection(r),
+    ].join("\n")),
+    anchor("sec-thesis", thesisAntiThesisSection(r)),
+    anchor("sec-model", financialModelSection(r)),
+    anchor("sec-valuation", valuationSection(r)),
+    anchor("sec-verdict", convictionSection(r)),
   ].join("\n");
 }

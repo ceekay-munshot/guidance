@@ -32,6 +32,7 @@ function makeEnv({ token = "tok", kv = {} } = {}) {
     REPORTS: {
       get: async (k, opt) => { const v = store.get(k); return v == null ? null : (opt && opt.type === "json" ? JSON.parse(v) : v); },
       put: async (k, v) => { store.set(k, String(v)); },
+      list: async ({ prefix = "" } = {}) => ({ keys: [...store.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })), list_complete: true }),
     },
     ASSETS: { fetch: async (req) => {
       if (new URL(req.url).pathname === "/data/universe.json") {
@@ -148,6 +149,35 @@ ok(body.status === "done", "an old error behind a newer report → still serves 
 body = await (await get(makeEnv({ kv: { [`status:${SLUG}`]: j({ state: "error", message: "not resolvable" }) } }), `/api/report?slug=${SLUG}`)).json();
 ok(body.status === "error" && /not resolvable/.test(body.error), "status error (no report) → error + message");
 ok((await (await get(makeEnv(), `/api/report?slug=${SLUG}`)).json()).status === "unknown", "no report/status → unknown");
+
+// ── Step 11: Muns transform + /api/search + /api/reports + ticker slug ──
+const munsPayload = { success: true, data: { total_results: 4, results: {
+  RELIANCE: ["India", "Reliance Industries Ltd", "Refineries"],
+  AAPL: ["United States", "Apple Inc", "Technology"],
+  NAVINFLUOR: ["India", "Navin Fluorine International Ltd", null],
+  BADENTRY: ["India"], // malformed (no name)
+} } };
+ok(__test.munsToResults(munsPayload).length === 2, "munsToResults: 2 India results (US + malformed dropped)");
+ok(__test.munsToResults(munsPayload).find((r) => r.ticker === "NAVINFLUOR").sector === null, "munsToResults: null sector preserved");
+ok(__test.munsToResults(null).length === 0 && __test.munsToResults({}).length === 0, "munsToResults: junk → []");
+ok(__test.sortReports([{ generated_at: "2026-01-01" }, { generated_at: "2026-06-01" }])[0].generated_at === "2026-06-01", "sortReports: newest first");
+
+globalThis.fetch = async (url) => { if (String(url).includes("birdnest.muns.io")) return new Response(JSON.stringify(munsPayload), { status: 200 }); return new Response("{}", { status: 200 }); };
+const searchEnv = makeEnv(); searchEnv.MUNS_TOKEN = "muns-tok";
+let sres = await (await get(searchEnv, "/api/search?q=rel")).json();
+ok(sres.ok && sres.results.length === 2 && sres.results.every((r) => r.country === "India"), "/api/search: India-only transform");
+sres = await (await get(makeEnv(), "/api/search?q=rel")).json(); // no MUNS_TOKEN
+ok(sres.ok === false && sres.results.length === 0, "/api/search without MUNS_TOKEN → ok:false, empty (client falls back)");
+ok((await (await get(makeEnv({ token: "t" }), "/api/search?q=r")).json()).results.length === 0, "/api/search: <2 chars → empty");
+
+const repEnv = makeEnv({ kv: { "report-meta:a": j({ slug: "a", generated_at: "2026-01-01" }), "report-meta:b": j({ slug: "b", generated_at: "2026-06-01" }) } });
+const repList = (await (await get(repEnv, "/api/reports")).json()).reports;
+ok(repList.length === 2 && repList[0].slug === "b", "/api/reports: aggregates per-slug cards, newest first");
+
+// analyze derives the slug from the TICKER (unique key), and passes it to the dispatch
+stubDispatchOk(); dispatches = [];
+const tk = await (await post(makeEnv(), "/api/analyze", { company: "Reliance Industries Ltd", ticker: "RELIANCE" })).json();
+ok(tk.slug === "reliance" && dispatches[0].body.inputs.ticker === "RELIANCE", "analyze: slug from ticker + ticker passed to dispatch");
 
 // ── the token is never leaked in a response ──
 globalThis.fetch = async (url) => { if (String(url).includes("/actions/workflows/")) return new Response("boom", { status: 500 }); return new Response("{}", { status: 200 }); };

@@ -101,6 +101,8 @@ Cloudflare Workers, deployed on push to `main` (Git integration). The static sit
   (`id` = your Namespace ID, not secret); vars `GITHUB_REPO` / `GITHUB_BRANCH`.
 - **Secret — `wrangler secret put GITHUB_TOKEN`** (never committed): a fine-grained PAT scoped to
   this repo with **Actions: Read & write**. The Worker uses it only to dispatch the workflow.
+- **Secret — `wrangler secret put MUNS_TOKEN`** (Step 11): the bearer for the Muns stock-search API,
+  used server-side by `GET /api/search`. Without it, search falls back to `public/data/universe.json`.
 
 ### GitHub Action — repo secrets (Settings → Secrets → Actions)
 
@@ -113,15 +115,23 @@ Cloudflare Workers, deployed on push to `main` (Git integration). The static sit
 | `CF_API_TOKEN` | token scoped to **Workers KV Storage: Edit** — the Action writes KV |
 | `CF_KV_NAMESPACE_ID` | the `REPORTS` KV Namespace ID (same value as in `wrangler.jsonc`) |
 
-## GO-LIVE test checklist
+## GO-LIVE test checklist (Step 11 — the three-screen product)
 
 1. **Push `main`** → the Worker deploys (Cloudflare Git integration).
-2. **Set the values above:** the 3 Cloudflare Action secrets, the Worker `GITHUB_TOKEN`, and the
-   KV Namespace ID in `wrangler.jsonc` (already set to the owner's namespace).
-3. **Open the site**, pick a company (or type any name/ticker), hit **Analyze**.
-4. Watch the run fire in the repo's **Actions** tab; the page shows *Analyzing… (Ns)* while it polls.
-5. When the Action finishes (~1–2 min), the **real report renders** (editable model + live valuation).
-   A company that can't be resolved on Screener surfaces a clean error with **Try again**.
+2. **Set the values:** the 3 Cloudflare Action secrets, the Worker `GITHUB_TOKEN` **and `MUNS_TOKEN`**,
+   and the KV Namespace ID in `wrangler.jsonc` (already set to the owner's namespace).
+3. **Search** a stock (e.g. type `RELIAN`) → the dropdown shows **India-listed** results only.
+4. **Run Analyze** → the Loading screen shows a staged progress bar in plain language
+   (Gathering financials → Pulling the call → Reading commentary → … → Assembling your report).
+5. **Switch tabs / reload mid-run** → the run keeps going server-side; the page resumes the Loading
+   screen and catches up (or jumps straight to the report if it finished while you were away).
+6. When it finishes, the **Report** screen renders (sticky section nav, institutional tables, editable
+   model + live valuation). A company that can't be resolved surfaces a clean error with **Try again**.
+7. Back on the Landing screen, the run is saved in the **library** (newest first); click it to reopen
+   the cached report **instantly**, or use its **Re-run** to refresh.
+
+The client language never exposes internals (no "GitHub Actions" / "KV" / "workflow"). Runs are the
+source of truth in KV and survive tab-switch, reload, and reopen.
 
 ### Cost / abuse guardrail (optional, not wired)
 
