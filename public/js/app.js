@@ -9,6 +9,7 @@ import {
   resolveTarget, pollDecision, STAGES, CHECKLIST_STAGES, stageInfo, sortReports, relativeTime,
   saveInflight, loadInflight, clearInflight,
 } from "./analyze.js";
+import { exportPdf, exportExcel } from "./export.js";
 
 // ── config ──
 const MAX_RESULTS = 8;
@@ -396,10 +397,12 @@ function mountReport(report, meta) {
   const nav = REPORT_SECTIONS.map((s) => `<a href="#${s.id}" data-nav="${s.id}" class="whitespace-nowrap text-sm font-medium pb-2 px-1">${escapeHtml(s.label)}</a>`).join("");
   screens.report.innerHTML = `
     <div class="fade-in py-8">
-      <div class="flex items-center justify-between gap-3 mb-4">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
         <button id="back-btn" type="button" class="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800"><i data-lucide="arrow-left" class="w-4 h-4"></i>Library</button>
-        <div class="flex items-center gap-3">
-          <span class="text-xs text-slate-400">${gen}</span>
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          <span class="text-xs text-slate-400 mr-1">${gen}</span>
+          <button id="export-pdf" type="button" class="inline-flex items-center gap-1.5 rounded-full ring-1 ring-inset ring-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"><i data-lucide="file-text" class="w-3.5 h-3.5"></i>Export PDF</button>
+          <button id="export-xlsx" type="button" class="inline-flex items-center gap-1.5 rounded-full ring-1 ring-inset ring-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"><i data-lucide="table" class="w-3.5 h-3.5"></i>Export Excel</button>
           <button id="regen-btn" type="button" class="inline-flex items-center gap-1.5 rounded-full ring-1 ring-inset ring-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-50"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Regenerate</button>
         </div>
       </div>
@@ -411,6 +414,8 @@ function mountReport(report, meta) {
   hydrateModel(report, qs("#report-body"));
   qs("#back-btn").addEventListener("click", () => goLanding());
   qs("#regen-btn").addEventListener("click", () => startAnalyze({ name: report?.meta?.company || meta.name, ticker: report?.meta?.ticker || meta.ticker }, true));
+  wireExport("#export-pdf", "Preparing PDF…", () => exportPdf(report), "Couldn't build the PDF — check your connection and try again.");
+  wireExport("#export-xlsx", "Preparing Excel…", () => exportExcel(report), "Couldn't build the workbook — check your connection and try again.");
   qsa(".report-nav a").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); const el = qs(`#${a.dataset.nav}`); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }));
   wireScrollSpy();
   renderIcons();
@@ -426,6 +431,47 @@ function wireScrollSpy() {
     if (visible[0]) setActive(visible[0].target.id);
   }, { rootMargin: "-45% 0px -50% 0px", threshold: 0 });
   targets.forEach((el) => obs.observe(el));
+}
+
+// ── export buttons (client-side PDF / Excel from the open report) ──
+// Loads the CDN lib on first click, shows a busy label, and surfaces a clean toast on failure
+// (Excel silently falls back to CSV inside exportExcel; PDF has no fallback, so we catch + toast).
+function wireExport(sel, busyLabel, run, errMsg) {
+  const btn = qs(sel);
+  if (!btn) return;
+  const original = btn.innerHTML;
+  btn.addEventListener("click", async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner" style="width:.9rem;height:.9rem"></span>${escapeHtml(busyLabel)}`;
+    try {
+      const res = await run();
+      if (res && res.fallback) toast("ExcelJS unavailable — exported a CSV instead.", false);
+      else toast("Download ready.", false);
+    } catch (err) {
+      toast(errMsg, true);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = original;
+      renderIcons();
+    }
+  });
+}
+
+let toastTimer = null;
+function toast(message, isError) {
+  let el = qs("#toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast";
+    el.className = "fixed left-1/2 bottom-6 -translate-x-1/2 z-50 rounded-full px-4 py-2 text-sm font-medium shadow-lg ring-1 transition-opacity duration-300";
+    document.body.appendChild(el);
+  }
+  el.className = `fixed left-1/2 bottom-6 -translate-x-1/2 z-50 rounded-full px-4 py-2 text-sm font-medium shadow-lg ring-1 transition-opacity duration-300 ${isError ? "bg-rose-50 text-rose-700 ring-rose-200" : "bg-white text-slate-700 ring-slate-200"}`;
+  el.textContent = message;
+  el.style.opacity = "1";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.opacity = "0"; }, 3200);
 }
 
 // ── shared UI bits ──
