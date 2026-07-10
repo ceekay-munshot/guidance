@@ -95,7 +95,7 @@
             "required": ["segment", "ebitda_margin"],
             "properties": {
               "segment": { "type": "string" },
-              "ebitda_margin": { "type": "number", "description": "Segment EBITDA margin, percent." }
+              "ebitda_margin": { "type": ["number", "null"], "description": "Segment EBITDA margin, percent. null when the company does not disclose the segment's margin (the renderer shows 'not disclosed'; never invent a number)." }
             }
           }
         }
