@@ -37,9 +37,9 @@ ok(report.meta.sources.concall_date === "2026-05-01" && report.meta.transcript_a
 ok(report.about.sector === "Chemicals" && report.about.sub_sector === "Specialty & Fluorochemicals", "about sector/sub_sector from bundle (not re-derived)");
 ok(report.about.products.length === 3 && report.about.segment_reported === false, "about products/segment_reported from LLM");
 ok(report.about.revenue_mix[0].segment === "cGMP (CDMO)" && report.about.revenue_mix[0].pct === 35, "revenue_mix carried through");
-// "not disclosed" preservation
+// undisclosed-margin handling: stays null (schema-valid number|null), never a magic string
 ok(report.about.margin_by_segment[0].ebitda_margin === 30, "disclosed margin kept as number");
-ok(report.about.margin_by_segment[1].ebitda_margin === "not disclosed", "null margin → 'not disclosed' verbatim (never invented)");
+ok(report.about.margin_by_segment[1].ebitda_margin === null, "undisclosed margin → null (schema-valid; renderer shows 'not disclosed', never invents a number)");
 
 // ── source-tagging: every C.1/C.2 item is Transcript ──
 ok(report.concall.guidance.every((g) => g.source === "Transcript") && report.concall.guidance.length === 3, "C.1 guidance all source=Transcript");

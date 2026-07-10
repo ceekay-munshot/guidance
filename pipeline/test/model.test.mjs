@@ -106,5 +106,14 @@ const broken = JSON.parse(JSON.stringify(clean));
 broken.next_steps.conviction = "Strong Buy"; // not in enum
 ok(!validateFull(broken, schema).ok, "full validation rejects an out-of-enum conviction");
 
+// regression (Vedanta): an UNDISCLOSED segment margin is a schema-valid null, but the old magic
+// string "not disclosed" must be rejected — that string failed the finalize gate for conglomerates.
+const undisclosed = JSON.parse(JSON.stringify(clean));
+undisclosed.about.margin_by_segment.push({ segment: "Undisclosed Div", ebitda_margin: null });
+ok(validateFull(undisclosed, schema).ok, "full validation ACCEPTS a null (undisclosed) segment margin");
+const stringMargin = JSON.parse(JSON.stringify(clean));
+stringMargin.about.margin_by_segment.push({ segment: "Bad Div", ebitda_margin: "not disclosed" });
+ok(!validateFull(stringMargin, schema).ok, "full validation REJECTS a string segment margin (the old bug shape)");
+
 console.log(fails === 0 ? "\nMODEL + FINALIZE (Step 9) OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);
 process.exit(fails ? 1 : 0);

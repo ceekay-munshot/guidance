@@ -71,7 +71,10 @@ export function assembleReport(existing, bundle, llm, { pptOnly = false, generat
     revenue_mix: (a.revenue_mix || []).map((r) => ({ segment: r.segment, pct: r.pct })),
     margin_by_segment: (a.margin_by_segment || []).map((r) => ({
       segment: r.segment,
-      ebitda_margin: typeof r.ebitda_margin === "number" ? r.ebitda_margin : "not disclosed", // null → verbatim
+      // Undisclosed margin stays null (schema allows number|null); the renderer shows "not disclosed".
+      // Never coerce to a string here — the final report.schema.json validation requires number|null,
+      // and a magic string ("not disclosed") failed the finalize gate for multi-segment conglomerates.
+      ebitda_margin: typeof r.ebitda_margin === "number" ? r.ebitda_margin : null,
     })),
   };
 
@@ -112,25 +115,19 @@ export function assembleReport(existing, bundle, llm, { pptOnly = false, generat
 }
 
 /**
- * Validate the B (about) and C (concall) slices against report.schema.json. Permits the one
- * documented exception: margin_by_segment.ebitda_margin may be the string "not disclosed"
- * (the schema says number; see pipeline/VALIDATION-TODO.md). Returns { ok, errors, warnings }.
+ * Validate the B (about) and C (concall) slices against report.schema.json. An undisclosed segment
+ * margin is a schema-valid `null` (report.schema.json: ebitda_margin is number|null), so we validate
+ * the real `about` directly — no coercion — and just surface a warning noting which segments are
+ * undisclosed. Returns { ok, errors, warnings }.
  */
 export function validateBC(report, reportSchema) {
   const root = reportSchema;
-  // Validate a copy where "not disclosed" margins are coerced to a number, so the rest is strict.
-  const aboutForVal = JSON.parse(JSON.stringify(report.about));
-  const warnings = [];
-  aboutForVal.margin_by_segment = (aboutForVal.margin_by_segment || []).map((m) => {
-    if (typeof m.ebitda_margin !== "number") {
-      warnings.push(`about.margin_by_segment "${m.segment}": ${JSON.stringify(m.ebitda_margin)} (undisclosed — allowed exception)`);
-      return { ...m, ebitda_margin: 0 };
-    }
-    return m;
-  });
+  const warnings = (report.about?.margin_by_segment || [])
+    .filter((m) => typeof m.ebitda_margin !== "number")
+    .map((m) => `about.margin_by_segment "${m.segment}": ${JSON.stringify(m.ebitda_margin)} (undisclosed)`);
 
   const errors = [
-    ...validate(root.properties.about, aboutForVal, root, {}, "about"),
+    ...validate(root.properties.about, report.about, root, {}, "about"),
     ...validate(root.properties.concall, report.concall, root, {}, "concall"),
   ];
   return { ok: errors.length === 0, errors, warnings };
