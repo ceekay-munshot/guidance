@@ -59,12 +59,18 @@ export function salvageReport(report, schema) {
   const r = JSON.parse(JSON.stringify(report));
   const degraded = [];
 
-  // 1 · best-effort arrays — coerce non-arrays to [], drop items that fail their item schema
+  // 0 · strip stray top-level keys (root is additionalProperties:false; stripInternal only drops
+  // `_`-prefixed ones) so a genuinely-valid salvage is achievable and `ok` can mean "schema-valid".
+  for (const k of Object.keys(r)) if (!(schema.properties && schema.properties[k])) { delete r[k]; degraded.push(`${k}: unexpected top-level key removed`); }
+
+  // 1 · best-effort arrays — materialize a MISSING or non-array field to [] (a missing best-effort
+  // array must not hard-fail — e.g. next_steps.monitorables lives in the load-bearing verdict object,
+  // so it has no section skeleton), then drop items that fail their item schema.
   for (const path of BEST_EFFORT_ARRAYS) {
     const node = schemaAt(schema, path);
     if (!node || !node.items) continue;
     const list = get(r, path);
-    if (!Array.isArray(list)) { if (list !== undefined) { setPath(r, path, []); degraded.push(`${path}: unavailable`); } continue; }
+    if (!Array.isArray(list)) { setPath(r, path, []); if (list !== undefined) degraded.push(`${path}: unavailable`); continue; }
     const kept = list.filter((it) => validate(node.items, it, schema).length === 0);
     if (kept.length !== list.length) { setPath(r, path, kept); degraded.push(`${path}: dropped ${list.length - kept.length} malformed item(s)`); }
   }
@@ -90,8 +96,10 @@ export function salvageReport(report, schema) {
     if (node && validate(node, r[sec], schema).length) { r[sec] = SECTION_SKELETONS[sec](); degraded.push(`${sec}: replaced with empty (unavailable)`); }
   }
 
-  // 5 · classify what's left: load-bearing violations are fatal, everything else is now clean
+  // 5 · publish ONLY if the salvaged report is genuinely schema-valid (not merely free of load-bearing
+  // errors) — otherwise we'd emit invalid JSON as a "partial" report and break the contract. `fatal`
+  // is kept for diagnostics: load-bearing violations are the expected reason a report can't be salvaged.
   const errors = validate(schema, r, schema);
   const fatal = errors.filter((e) => LOAD_BEARING.some((p) => e.startsWith(p)));
-  return { report: r, ok: fatal.length === 0, degraded, fatal, errors };
+  return { report: r, ok: errors.length === 0, degraded, fatal, errors };
 }

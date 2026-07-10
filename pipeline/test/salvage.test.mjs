@@ -91,5 +91,22 @@ const valid = (r) => validate(schema, r, schema).length === 0;
   ok(s.ok && valid(s.report) && !s.report.next_steps.monitorables.includes(42), "bad monitorable dropped, verdict intact, ok");
 }
 
+// (Codex P2) a MISSING best-effort array in the load-bearing verdict object → materialized to [], not a hard fail
+{
+  const r = clone();
+  delete r.next_steps.monitorables;
+  const s = salvageReport(r, schema);
+  ok(s.ok && valid(s.report) && Array.isArray(s.report.next_steps.monitorables), "missing next_steps.monitorables → [] (not a hard fail)");
+}
+
+// (Codex P2) a stray non-load-bearing violation (unexpected top-level key) must NOT report ok while invalid
+{
+  const r = clone();
+  r.junk_field = { anything: 1 }; // root is additionalProperties:false → a schema violation, not load-bearing
+  const s = salvageReport(r, schema);
+  ok(s.ok === valid(s.report), "ok reflects genuine validity, never true-while-invalid");
+  ok(s.ok && valid(s.report) && !("junk_field" in s.report), "stray top-level key stripped → valid + ok");
+}
+
 console.log(fails === 0 ? "\nSALVAGE (best-effort partial) OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);
 process.exit(fails ? 1 : 0);

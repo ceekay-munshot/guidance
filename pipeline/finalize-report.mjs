@@ -68,7 +68,7 @@ async function main() {
   if (!v.ok) {
     const sal = salvageReport(clean, schema);
     if (sal.ok) { publish = sal.report; partial = true; degraded = sal.degraded; }
-    else { fatal = sal.fatal; }
+    else { fatal = sal.fatal.length ? sal.fatal : sal.errors; } // load-bearing if any, else the residual
   }
   const publishable = v.ok || partial;
 
