@@ -15,6 +15,7 @@ export function buildMessages(bundle, transcript, pptText, { pptOnly = false } =
     `- Extract only what the provided documents SUPPORT. Never invent, never carry prior-quarter guidance forward, never use outside knowledge.`,
     `- Empty array where nothing applies. For an undisclosed segment EBITDA margin, return null (never guess a number).`,
     `- Evidence must be PARAPHRASED in your own words (not verbatim quotes) and grounded in the call.`,
+    `- SEPARATELY, for guidance, themes and thesis_triggers, also return "quote": the EXACT verbatim sentence from the source that backs the item — copied WORD-FOR-WORD with no edits, so a reader can Ctrl+F and find it. Prefer one clean sentence. Use null if no single sentence cleanly backs it. (This quote is machine-checked against the source; a paraphrase will be dropped.)`,
     ``,
     `SECTION B (about) — you MAY use the transcript AND the investor PPT (transcript first, PPT to fill gaps):`,
     `- products; segments; segment_reported (true only if the company reports segment splits);`,
@@ -78,12 +79,16 @@ export function assembleReport(existing, bundle, llm, { pptOnly = false, generat
     })),
   };
 
+  // Verbatim quote (Ctrl+F-able) rides alongside the paraphrased evidence; source_url is the doc the
+  // reader lands on — for Transcript/PPT facts the client resolves it from meta.sources, so we only
+  // set it when the extractor gave a specific one. verify.mjs later drops quotes not found in the source.
+  const q = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
   const concall = {
-    guidance: (c.guidance || []).map((g) => ({ metric: g.metric, horizon: g.horizon, statement: g.statement, type: g.type, value: g.value ?? null, source })),
-    themes: (c.themes || []).map((t) => ({ theme: t.theme, stance: t.stance, evidence: t.evidence, source })),
+    guidance: (c.guidance || []).map((g) => ({ metric: g.metric, horizon: g.horizon, statement: g.statement, type: g.type, value: g.value ?? null, source, quote: q(g.quote) })),
+    themes: (c.themes || []).map((t) => ({ theme: t.theme, stance: t.stance, evidence: t.evidence, source, quote: q(t.quote) })),
     tone_shift_vs_last_quarter: c.tone_shift_vs_last_quarter || "unknown",
     expansion_flags: (c.expansion_flags || []).map((f) => ({ metric: f.metric, yoy_delta: f.yoy_delta ?? null, qoq_delta: f.qoq_delta ?? null, driver: f.driver })),
-    thesis_triggers: (c.thesis_triggers || []).map((t) => ({ trigger: t.trigger, flag: t.flag, evidence: t.evidence })),
+    thesis_triggers: (c.thesis_triggers || []).map((t) => ({ trigger: t.trigger, flag: t.flag, evidence: t.evidence, quote: q(t.quote) })),
     classification: (c.classification || []).map((t) => ({ tag: t.tag, justification: t.justification })),
     risks: [], // C.6 — web-sourced, Step 8
     management_tone: (c.management_tone || []).map((t) => ({ theme: t.theme, tone: t.tone, anchor: t.anchor })),
@@ -112,6 +117,41 @@ export function assembleReport(existing, bundle, llm, { pptOnly = false, generat
   if (!Array.isArray(report.thesis)) report.thesis = []; // Step 8
   if (!Array.isArray(report.anti_thesis)) report.anti_thesis = []; // Step 8
   return report;
+}
+
+/** Normalise text for robust substring matching: lowercase, unify quotes/dashes, drop punctuation,
+ *  collapse whitespace. A genuinely-verbatim quote survives OCR/formatting noise; a paraphrase won't. */
+export function normForMatch(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[‘’ʼ']/g, "'")
+    .replace(/[“”"]/g, " ")
+    .replace(/[‐-―-]/g, " ")
+    .replace(/[^\w\s']/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Enforce the provenance guarantee: drop any transcript/PPT-sourced `quote` that can't actually be
+ * found (normalised) in the source text, so EVERY quote we publish is genuinely Ctrl+F-able. A quote
+ * shorter than ~12 normalised chars is treated as too weak to anchor and dropped. Mutates + returns
+ * the report plus a {kept, dropped} tally. Web quotes are left alone (verified elsewhere / best-effort).
+ */
+export function verifyQuotes(report, sourceText) {
+  const hay = normForMatch(sourceText);
+  let kept = 0, dropped = 0;
+  const check = (item) => {
+    if (!item || item.quote == null) return;
+    const needle = normForMatch(item.quote);
+    if (needle.length >= 12 && hay.includes(needle)) { kept++; return; }
+    item.quote = null; dropped++;
+  };
+  const c = report.concall || {};
+  (c.guidance || []).forEach(check);
+  (c.themes || []).forEach(check);
+  (c.thesis_triggers || []).forEach(check);
+  return { report, kept, dropped };
 }
 
 /**

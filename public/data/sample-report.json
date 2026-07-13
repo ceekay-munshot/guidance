@@ -10,7 +10,12 @@
     "sources": {
       "transcript_url": "https://example.com/navinfluor/q4fy26-transcript.pdf",
       "ppt_url": "https://example.com/navinfluor/q4fy26-investor-ppt.pdf",
-      "concall_date": "2026-05-06"
+      "concall_date": "2026-05-06",
+      "web": [
+        { "url": "https://www.bseindia.com/xml-data/corpfiling/navin-gst.pdf", "title": "Navin Fluorine — GST demand disclosure (BSE filing)" },
+        { "url": "https://www.icra.in/Rationale/ShowRationaleReport?Id=98231", "title": "ICRA rationale — Navin Fluorine" },
+        { "url": "https://www.business-standard.com/companies/navin-fluorine-capacity", "title": "Business Standard — India fluorochemicals capacity additions" }
+      ]
     },
     "inputs": {
       "cmp": 4200,
@@ -58,16 +63,16 @@
 
   "concall": {
     "guidance": [
-      { "metric": "Revenue growth", "horizon": "FY27-FY28", "statement": "Management reiterated a 20%+ revenue CAGR through FY28, front-loaded by cGMP-4 ramp.", "type": "directional", "value": "20%+ CAGR", "source": "Transcript" },
-      { "metric": "EBITDA margin", "horizon": "FY27", "statement": "Guided margins toward 25% in FY27 as high-value CDMO mix rises and R32 stabilises.", "type": "hard", "value": "~25%", "source": "Transcript" },
-      { "metric": "Capex", "horizon": "FY27", "statement": "FY27 capex guided at ₹650-700cr, largely cGMP-4 completion and de-bottlenecking.", "type": "hard", "value": "₹650-700cr", "source": "PPT" },
-      { "metric": "cGMP-4 contribution", "horizon": "H2FY27", "statement": "New Dahej block expected to contribute from H2FY27 with full utilisation over 18-24 months.", "type": "directional", "value": null, "source": "Transcript" }
+      { "metric": "Revenue growth", "horizon": "FY27-FY28", "statement": "Management reiterated a 20%+ revenue CAGR through FY28, front-loaded by cGMP-4 ramp.", "type": "directional", "value": "20%+ CAGR", "source": "Transcript", "quote": "We remain confident of delivering a 20 percent plus revenue CAGR through FY28, and that is front-loaded by the cGMP-4 ramp." },
+      { "metric": "EBITDA margin", "horizon": "FY27", "statement": "Guided margins toward 25% in FY27 as high-value CDMO mix rises and R32 stabilises.", "type": "hard", "value": "~25%", "source": "Transcript", "quote": "We expect blended EBITDA margins to move towards 25 percent in FY27 as the high-value CDMO mix rises." },
+      { "metric": "Capex", "horizon": "FY27", "statement": "FY27 capex guided at ₹650-700cr, largely cGMP-4 completion and de-bottlenecking.", "type": "hard", "value": "₹650-700cr", "source": "PPT", "quote": "FY27 capex is planned at Rs 650 to 700 crore, largely towards cGMP-4 completion and de-bottlenecking." },
+      { "metric": "cGMP-4 contribution", "horizon": "H2FY27", "statement": "New Dahej block expected to contribute from H2FY27 with full utilisation over 18-24 months.", "type": "directional", "value": null, "source": "Transcript", "quote": "The new Dahej block should start contributing from the second half of FY27, reaching full utilisation over 18 to 24 months." }
     ],
     "themes": [
-      { "theme": "CDMO / cGMP scale-up", "stance": "Positive", "evidence": "Two new molecules moved to commercial supply; a third in validation. Order visibility described as 'strongest in company history'.", "source": "Transcript" },
-      { "theme": "R32 refrigerant pricing", "stance": "Negative", "evidence": "Spot R32 corrected ~15% YoY on Chinese oversupply; management called it 'a FY26 headwind we expect to lap by H2FY27'.", "source": "Transcript" },
-      { "theme": "Agrochem demand", "stance": "Neutral", "evidence": "Described agro intermediates as 'bottoming, not yet recovering'; no restocking signal from global innovators yet.", "source": "Transcript" },
-      { "theme": "Balance sheet / leverage", "stance": "Neutral", "evidence": "Net debt at ₹850cr; management framed this as peak-capex-year leverage, deleveraging from FY28.", "source": "PPT" }
+      { "theme": "CDMO / cGMP scale-up", "stance": "Positive", "evidence": "Two new molecules moved to commercial supply; a third in validation. Order visibility described as 'strongest in company history'.", "source": "Transcript", "quote": "Two molecules moved to commercial supply this quarter and a third is in validation; order visibility is the strongest in the company's history." },
+      { "theme": "R32 refrigerant pricing", "stance": "Negative", "evidence": "Spot R32 corrected ~15% YoY on Chinese oversupply; management called it 'a FY26 headwind we expect to lap by H2FY27'.", "source": "Transcript", "quote": "R32 has corrected around 15 percent year on year on Chinese oversupply; it is a FY26 headwind we expect to lap by the second half of FY27." },
+      { "theme": "Agrochem demand", "stance": "Neutral", "evidence": "Described agro intermediates as 'bottoming, not yet recovering'; no restocking signal from global innovators yet.", "source": "Transcript", "quote": "On agrochem we would say demand is bottoming, but we are not yet calling a recovery." },
+      { "theme": "Balance sheet / leverage", "stance": "Neutral", "evidence": "Net debt at ₹850cr; management framed this as peak-capex-year leverage, deleveraging from FY28.", "source": "PPT", "quote": "Net debt stands at Rs 850 crore; this is peak-capex-year leverage and we expect to deleverage from FY28." }
     ],
     "tone_shift_vs_last_quarter": "More confident on CDMO order visibility than Q3FY26 (moved from 'building pipeline' to 'commercial supply'), but noticeably more guarded on refrigerants and agrochem timing.",
     "expansion_flags": [
@@ -76,10 +81,10 @@
       { "metric": "Net debt", "yoy_delta": "+₹320cr", "qoq_delta": "+₹110cr", "driver": "Capex on cGMP-4 and Surat de-bottlenecking" }
     ],
     "thesis_triggers": [
-      { "trigger": "cGMP-4 commissioned on schedule", "flag": "Yes", "evidence": "Block mechanically complete; commercial supply from H2FY27 confirmed on call." },
-      { "trigger": "New CDMO molecule wins", "flag": "Yes", "evidence": "Two molecules moved to commercial supply this quarter." },
-      { "trigger": "Margin expansion toward 25%", "flag": "Partial", "evidence": "Guided to 25% FY27 but Q4 held at ~23%; delivery not yet demonstrated." },
-      { "trigger": "Agrochem recovery", "flag": "No", "evidence": "Management explicitly said demand is bottoming, not recovering." }
+      { "trigger": "cGMP-4 commissioned on schedule", "flag": "Yes", "evidence": "Block mechanically complete; commercial supply from H2FY27 confirmed on call.", "quote": "The cGMP-4 block is mechanically complete and we have confirmed commercial supply from the second half of FY27." },
+      { "trigger": "New CDMO molecule wins", "flag": "Yes", "evidence": "Two molecules moved to commercial supply this quarter.", "quote": "Two molecules moved to commercial supply this quarter and a third is in validation." },
+      { "trigger": "Margin expansion toward 25%", "flag": "Partial", "evidence": "Guided to 25% FY27 but Q4 held at ~23%; delivery not yet demonstrated.", "quote": "We expect blended EBITDA margins to move towards 25 percent in FY27 as the high-value CDMO mix rises." },
+      { "trigger": "Agrochem recovery", "flag": "No", "evidence": "Management explicitly said demand is bottoming, not recovering.", "quote": "On agrochem we would say demand is bottoming, but we are not yet calling a recovery." }
     ],
     "classification": [
       { "tag": "In-line quarter", "justification": "Revenue and margin broadly matched consensus; no positive or negative surprise." },
@@ -87,11 +92,11 @@
       { "tag": "Capex-heavy phase", "justification": "Peak-capex year with leverage rising ahead of the cGMP-4 ramp." }
     ],
     "risks": [
-      { "risk": "cGMP-4 ramp slips or runs below target utilisation", "type": "Execution", "source": "Web" },
-      { "risk": "Sustained R32 / refrigerant oversupply from China", "type": "Pricing", "source": "Web" },
-      { "risk": "CDMO revenue concentrated in a few molecules / innovators", "type": "Concentration", "source": "Web" },
-      { "risk": "Prolonged agrochem destocking delays HPP recovery", "type": "Demand", "source": "Web" },
-      { "risk": "Rich valuation leaves little room for execution error", "type": "Valuation", "source": "Web" }
+      { "risk": "cGMP-4 ramp slips or runs below target utilisation", "type": "Execution", "source": "Web", "source_url": "https://www.icra.in/Rationale/ShowRationaleReport?Id=98231", "quote": "ICRA flagged the debt-funded cGMP-4 capex peak as a monitorable for FY27." },
+      { "risk": "Sustained R32 / refrigerant oversupply from China", "type": "Pricing", "source": "Web", "source_url": "https://www.business-standard.com/companies/navin-fluorine-capacity", "quote": "Multiple Indian fluorochemical players are adding CDMO and R32 capacity, raising the risk of pricing pressure over FY27-28." },
+      { "risk": "CDMO revenue concentrated in a few molecules / innovators", "type": "Concentration", "source": "Web", "source_url": "https://www.business-standard.com/companies/navin-fluorine-capacity", "quote": "Analysts note CDMO revenue remains concentrated in a handful of molecules and innovator relationships." },
+      { "risk": "Prolonged agrochem destocking delays HPP recovery", "type": "Demand", "source": "Web", "source_url": "https://www.business-standard.com/companies/navin-fluorine-capacity", "quote": "Global agrochemical destocking has been deeper and longer than expected, delaying a recovery in intermediates demand." },
+      { "risk": "Pending GST demand of ~₹120cr under appeal", "type": "Regulatory", "source": "Web", "source_url": "https://www.bseindia.com/xml-data/corpfiling/navin-gst.pdf", "quote": "The company disclosed a pending GST demand of approximately Rs 120 crore, now under appeal before the CESTAT." }
     ],
     "management_tone": [
       { "theme": "CDMO order visibility", "tone": "Confident", "anchor": "'Strongest order visibility in the company's history.'" },
@@ -105,15 +110,15 @@
   },
 
   "thesis": [
-    { "point": "cGMP (CDMO) is scaling into a structural growth engine — two molecules commercial, cGMP-4 commissioned, order visibility at an all-time high.", "falsifier": "cGMP revenue growth decelerates below ~20% for two consecutive quarters, or a flagship molecule is de-scoped by the innovator.", "source": "Transcript" },
+    { "point": "cGMP (CDMO) is scaling into a structural growth engine — two molecules commercial, cGMP-4 commissioned, order visibility at an all-time high.", "falsifier": "cGMP revenue growth decelerates below ~20% for two consecutive quarters, or a flagship molecule is de-scoped by the innovator.", "source": "Transcript", "quote": "Two molecules moved to commercial supply this quarter and a third is in validation; order visibility is the strongest in the company's history." },
     { "point": "Mix shift to high-value CDMO lifts blended EBITDA margin toward 25%+, structurally re-rating earnings quality.", "falsifier": "Blended EBITDA margin stays sub-24% through FY27 despite CDMO mix rising.", "source": "Est." },
-    { "point": "India fluorochemicals + China+1 sourcing gives a durable, hard-to-replicate raw-material and IP moat.", "falsifier": "New domestic capacity from peers compresses CDMO pricing/returns.", "source": "Web" }
+    { "point": "India fluorochemicals + China+1 sourcing gives a durable, hard-to-replicate raw-material and IP moat.", "falsifier": "New domestic capacity from peers compresses CDMO pricing/returns.", "source": "Web", "source_url": "https://www.business-standard.com/companies/navin-fluorine-capacity", "quote": "India's fluorochemicals base and China-plus-one sourcing give incumbents a hard-to-replicate raw-material advantage." }
   ],
 
   "anti_thesis": [
     { "point": "Valuation at ~45x FY27E EPS already discounts flawless cGMP-4 execution — the earnings surprise is priced in.", "falsifier": "Stock de-rates toward ~30x FY28E while earnings keep compounding 20%+.", "source": "Est." },
-    { "point": "HPP/refrigerant cyclicality (R32 oversupply, agrochem destocking) can offset CDMO gains and cap near-term margins.", "falsifier": "R32 prices stabilise and agrochem restocking begins, lifting HPP utilisation.", "source": "Transcript" },
-    { "point": "CDMO revenue is concentrated in a handful of molecules/innovators — single-contract risk is underappreciated.", "falsifier": "Order book diversifies across 6+ commercial molecules with no single one above ~15% of CDMO revenue.", "source": "Web" }
+    { "point": "HPP/refrigerant cyclicality (R32 oversupply, agrochem destocking) can offset CDMO gains and cap near-term margins.", "falsifier": "R32 prices stabilise and agrochem restocking begins, lifting HPP utilisation.", "source": "Transcript", "quote": "R32 has corrected around 15 percent year on year on Chinese oversupply; it is a FY26 headwind we expect to lap by the second half of FY27." },
+    { "point": "CDMO revenue is concentrated in a handful of molecules/innovators — single-contract risk is underappreciated.", "falsifier": "Order book diversifies across 6+ commercial molecules with no single one above ~15% of CDMO revenue.", "source": "Web", "source_url": "https://www.business-standard.com/companies/navin-fluorine-capacity", "quote": "Analysts note CDMO revenue remains concentrated in a handful of molecules and innovator relationships." }
   ],
 
   "financials": {

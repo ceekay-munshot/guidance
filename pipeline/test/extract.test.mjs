@@ -4,7 +4,7 @@
 
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { buildMessages, assembleReport, validateBC } from "../lib/extract-assemble.mjs";
+import { buildMessages, assembleReport, validateBC, verifyQuotes, normForMatch } from "../lib/extract-assemble.mjs";
 
 const F = (p) => fileURLToPath(new URL(p, import.meta.url));
 const bundle = JSON.parse(await readFile(F("../test-fixtures/bundle.sample.json"), "utf8"));
@@ -70,6 +70,29 @@ ok(!vb.ok && vb.errors.some((e) => /stance/.test(e) && /not in/.test(e)), "valid
 const bad2 = assembleReport(null, bundle, llm, { pptOnly: false, generated_at: "z" });
 delete bad2.concall.analyst_tone.qa_tenor;
 ok(!validateBC(bad2, schema).ok, "validator rejects a missing required field");
+
+// ── provenance: verbatim quotes carried through + verified against the source ──
+ok(report.concall.guidance.every((g) => "quote" in g), "assembly carries a `quote` slot on every guidance item");
+ok(report.concall.themes.every((t) => "quote" in t) && report.concall.thesis_triggers.every((t) => "quote" in t), "themes + thesis_triggers carry a `quote` slot");
+ok(buildMessages(bundle, transcript, "").find((m) => m.role === "system").content.includes("Ctrl+F"), "prompt asks for a Ctrl+F-able verbatim quote");
+
+// normForMatch: robust to case / punctuation / whitespace / smart-quotes
+ok(normForMatch("  We  target 20%—plus, CAGR. ") === "we target 20 plus cagr", "normForMatch normalises punctuation/whitespace/dashes");
+
+// verifyQuotes: keeps a quote found in the source, drops a paraphrase (guarantees Ctrl+F works)
+{
+  const src = "Management said: we expect blended EBITDA margins to move towards 25 percent in FY27. Thank you.";
+  const rep = { concall: {
+    guidance: [{ metric: "Margin", quote: "we expect blended EBITDA margins to move towards 25 percent in FY27" }],
+    themes: [{ theme: "Made up", quote: "this sentence is nowhere in the transcript at all" }],
+    thesis_triggers: [{ trigger: "T", quote: null }],
+  } };
+  const r = verifyQuotes(rep, src);
+  ok(r.kept === 1 && r.dropped === 1, "verifyQuotes: 1 verified, 1 dropped");
+  ok(rep.concall.guidance[0].quote && rep.concall.themes[0].quote === null, "verified quote kept; unfindable quote → null (never a fake Ctrl+F target)");
+}
+// a too-short quote can't anchor → dropped
+ok(verifyQuotes({ concall: { guidance: [{ quote: "yes" }] } }, "yes indeed").report.concall.guidance[0].quote === null, "verifyQuotes: sub-12-char quote dropped (too weak to anchor)");
 
 console.log(fails === 0 ? "\nEXTRACT (Step 7) OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);
 process.exit(fails ? 1 : 0);

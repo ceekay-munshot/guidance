@@ -92,6 +92,23 @@ KV; the **report schema is the single contract** (`public/data/report.schema.jso
 off. KV is the source of truth — reports are not committed back to the repo. A report is served from
 cache while newer than `FRESH_DAYS` (14); the report’s **Regenerate** button re-runs past the cache.
 
+### Source traceability
+
+Every sourced fact is traceable to where it came from. Facts carry a `source`
+(`Transcript | PPT | Web | Est.`) plus, where available, a **verbatim `quote`** and a
+`source_url`:
+
+- The extract step asks the model for the **exact backing sentence** per transcript fact, and
+  `verifyQuotes` (in `extract-assemble.mjs`) **drops any quote that isn't literally found in the
+  transcript** — so every quote we publish is a *checked* invariant, guaranteed Ctrl+F-able.
+- Web risks keep their citation URL (parsed from the model's `(Source: <URL>)`).
+- In the report, each source chip is a **link**: an HTML page opens with a Chromium scroll-to-text
+  fragment (`#:~:text=…`) that highlights the sentence; a transcript/deck PDF opens and a ⌕ button
+  copies the exact quote so the reader Ctrl+Fs it (browsers can't deep-link inside a PDF). A
+  **Sources** panel lists every document + web source. Both exports carry it — the Excel gains a
+  **Sources** sheet (a provenance ledger with clickable URLs + quotes) and the PDF a **Sources**
+  page. Helpers live in `public/js/provenance.js` (unit-tested).
+
 ### Best-effort partial reports
 
 A single unavailable/odd field never discards a whole analysis. At the finalize gate, if the complete

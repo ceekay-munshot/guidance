@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { callStructured, estimateCost, estTokens, DEFAULT_MODEL } from "./lib/openai.mjs";
 import { EXTRACTION_JSON_SCHEMA } from "./lib/extract-schema.mjs";
-import { buildMessages, assembleReport, validateBC } from "./lib/extract-assemble.mjs";
+import { buildMessages, assembleReport, validateBC, verifyQuotes } from "./lib/extract-assemble.mjs";
 import { log } from "./lib/util.mjs";
 
 const OUT_ROOT = fileURLToPath(new URL("./out/", import.meta.url));
@@ -89,6 +89,11 @@ async function main() {
   let existing = null;
   try { existing = JSON.parse(await readFile(join(dir, "report.json"), "utf8")); } catch { /* first write */ }
   const report = assembleReport(existing, bundle, llm, { pptOnly, generated_at: new Date().toISOString() });
+
+  // ── provenance: keep only quotes that are genuinely findable in the source (guarantees Ctrl+F) ──
+  const sourceText = pptOnly ? pptText : `${transcript}\n${pptText}`;
+  const vq = verifyQuotes(report, sourceText);
+  log.info(`verbatim quotes: ${vq.kept} verified · ${vq.dropped} dropped (not found in source → null)`);
 
   // ── validate B + C against report.schema.json ──
   const schema = JSON.parse(await readFile(SCHEMA_PATH, "utf8"));

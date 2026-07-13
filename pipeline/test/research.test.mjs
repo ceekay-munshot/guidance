@@ -31,7 +31,9 @@ ok(rtMsgs[1].content.includes("GST demand") && rtMsgs[1].content.includes("SOURC
 // ── assembleResearch: source-tagging + falsifier enforcement ──
 const { report: merged, warnings, dropped } = assembleResearch(report, researchLlm, { generated_at: "2026-07-09T11:00:00Z" });
 ok(merged.concall.risks.length === 2 && merged.concall.risks.every((r) => r.source === "Web"), "C.6 risks all source=Web");
-ok(merged.concall.risks.every((r) => /\(Source: https?:\/\//.test(r.risk)), "every risk cites a real URL");
+ok(merged.concall.risks.every((r) => /^https?:\/\//.test(r.source_url || "")), "every risk carries its citation URL in source_url");
+ok(merged.concall.risks.every((r) => !/\(?\s*source\s*:/i.test(r.risk)), "the (Source: URL) citation is stripped out of the displayed risk text");
+ok(merged.concall.risks.every((r) => r.quote === r.risk), "risk quote = the cleaned claim (deep-link target)");
 ok(merged.thesis.length === 3, "thesis: the empty-falsifier point was dropped (4 → 3)");
 ok(merged.thesis.every((p) => p.falsifier && p.falsifier.trim().length > 0), "every surviving thesis point has a non-empty falsifier");
 ok(merged.anti_thesis.length === 3 && merged.anti_thesis.every((p) => p.falsifier.trim()), "anti_thesis: 3 points, each falsifiable");
