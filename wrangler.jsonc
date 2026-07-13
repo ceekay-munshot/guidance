@@ -4,7 +4,7 @@
   // (worker/index.js) owns /api/* and lets everything else fall through to assets.
   // No build step — vanilla ES modules, all libs via CDN.
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "munshot-concall-deep-dive",
+  "name": "guidance",
   "compatibility_date": "2026-07-01",
   "main": "worker/index.js",
   "assets": {
