@@ -86,6 +86,20 @@ export async function fetchDoc(url, { directGet, firecrawlKey, scrapedoKey } = {
   return { bytes: null, text: null, via: null, attempts };
 }
 
+/** Minimum usable content lengths (chars). A transcript below this is treated as a failed fetch;
+ *  a PPT at/above PPT_MIN_USABLE is good enough to carry a PPT-only report. */
+export const TRANSCRIPT_MIN_USABLE = 500;
+export const PPT_MIN_USABLE = 1200;
+
+/**
+ * When Screener listed a transcript but its download failed (empty/too short — broken cert, timeout,
+ * blocked host), should we DEGRADE to a PPT-only report instead of hard-failing? Yes whenever we have
+ * a usable deck — so an unfetchable transcript never denies a company a report when a good PPT exists.
+ */
+export function shouldDegradeToPpt(transcriptChars, pptChars) {
+  return (transcriptChars || 0) < TRANSCRIPT_MIN_USABLE && (pptChars || 0) >= PPT_MIN_USABLE;
+}
+
 /** Generic HTML GET through Firecrawl/Scrape.do (used if a direct Screener fetch is blocked). */
 export async function fetchHtmlFallback(url, { firecrawlKey, scrapedoKey } = {}) {
   if (firecrawlKey) {

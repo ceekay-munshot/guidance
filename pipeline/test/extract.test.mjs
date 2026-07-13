@@ -5,6 +5,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { buildMessages, assembleReport, validateBC, verifyQuotes, normForMatch } from "../lib/extract-assemble.mjs";
+import { shouldDegradeToPpt } from "../lib/fetchers.mjs";
 
 const F = (p) => fileURLToPath(new URL(p, import.meta.url));
 const bundle = JSON.parse(await readFile(F("../test-fixtures/bundle.sample.json"), "utf8"));
@@ -93,6 +94,12 @@ ok(normForMatch("  We  target 20%—plus, CAGR. ") === "we target 20 plus cagr",
 }
 // a too-short quote can't anchor → dropped
 ok(verifyQuotes({ concall: { guidance: [{ quote: "yes" }] } }, "yes indeed").report.concall.guidance[0].quote === null, "verifyQuotes: sub-12-char quote dropped (too weak to anchor)");
+
+// ── PPT-only fallback: an un-fetchable transcript must not hard-fail a company with a good deck ──
+ok(shouldDegradeToPpt(0, 5000) === true, "fallback: transcript fetch failed + usable PPT → degrade to PPT-only (no hard fail)");
+ok(shouldDegradeToPpt(120, 21692) === true, "fallback: Sacheerome shape (empty transcript, 21k-char deck) → PPT-only");
+ok(shouldDegradeToPpt(6000, 5000) === false, "fallback: good transcript → keep transcript (no degrade)");
+ok(shouldDegradeToPpt(0, 200) === false, "fallback: no transcript AND no usable PPT → genuine fail (nothing to read)");
 
 console.log(fails === 0 ? "\nEXTRACT (Step 7) OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);
 process.exit(fails ? 1 : 0);
