@@ -94,7 +94,7 @@ noThrow(() => buildWorkbookModel(pptOnly), "workbookModel: builds from a PPT-onl
 noThrow(() => buildWorkbookModel({}), "workbookModel: builds from a bare {} report");
 const wm = buildWorkbookModel(sample);
 ok(wm.filename.endsWith(".xlsx"), "workbookModel: xlsx filename");
-ok(wm.sheets.map((s) => s.name).join(",") === "Summary,Concall,Thesis & Risks,Financials,Valuation", "workbookModel: five sheets in order");
+ok(wm.sheets.map((s) => s.name).join(",") === "Summary,Concall,Thesis & Risks,Financials,Valuation,Sources", "workbookModel: six sheets in order (incl. Sources)");
 const summary = wm.sheets[0];
 ok(summary.blocks.some((b) => b.type === "verdict" && b.conviction === "Hold-watch"), "workbookModel: Summary carries the verdict");
 ok(summary.blocks.some((b) => b.type === "bullets" && b.items.length === 7), "workbookModel: Summary carries takeaways");
@@ -108,6 +108,23 @@ ok(valTable.cols[1].numFmt === "mult" && valTable.rows[0][1] === 44.8, "workbook
 // percentages stored as whole numbers so Excel's 0.0\"%\" shows them correctly (NOT ×100)
 const concall = wm.sheets.find((s) => s.name === "Concall");
 ok(concall.blocks.some((b) => b.type === "table" && b.cols.some((col) => col.color === "stance")), "workbookModel: themes table flags stance colouring");
+
+// ══ provenance: Sources sheet + link cells ══
+const src = wm.sheets.find((s) => s.name === "Sources");
+ok(src && src.ncols === 5, "workbookModel: Sources sheet present (5 cols)");
+const citedTbl = src.blocks.find((b) => b.type === "table" && b.headers.includes("Verbatim quote"));
+ok(citedTbl && citedTbl.cols.some((col) => col.link), "workbookModel: cited-facts table has a link (URL) column");
+ok(citedTbl.rows.some((r) => /^https?:\/\//.test(r[4])), "workbookModel: at least one cited fact carries a real URL");
+ok(citedTbl.rows.some((r) => r[0] === "Risk" && /icra|bseindia|business-standard/.test(r[4])), "workbookModel: risks carry their web source URL");
+ok(src.blocks.some((b) => b.type === "kv" && b.pairs.some((p) => p[2] === "link")), "workbookModel: Documents block links the transcript/deck");
+// pdf model carries a Sources section with clickable docs + web
+const pmH = buildPdfModel(sample).sections.find((s) => s.id === "H");
+ok(pmH && pmH.kind === "sources" && pmH.docs.length === 2, "pdfModel: Sources section with transcript + deck");
+ok(pmH.web.length >= 3 && pmH.web.every((w) => w.url), "pdfModel: Sources section lists web sources with URLs");
+// reportContent resolves per-fact source URLs (transcript facts → doc URL; web facts → own url)
+const rc = reportContent(sample);
+ok(rc.guidance[0].url && rc.guidance[0].url.endsWith(".pdf"), "content: transcript guidance resolves to the transcript PDF url");
+ok(rc.risks.some((x) => /^https?:\/\//.test(x.url)) && rc.guidance[0].quote, "content: risks carry web url + guidance carries verbatim quote");
 
 // ══ buildCsv (fallback) ══
 noThrow(() => buildCsv(sample), "csv: builds from the real sample");

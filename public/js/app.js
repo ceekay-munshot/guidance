@@ -4,7 +4,7 @@
 // watch progress, arrive at the report. Runs are server-side and survive reload / tab switch.
 
 import { qs, qsa, sleep, debounce, escapeHtml, highlightMatch, renderIcons, show, clamp } from "./ui.js";
-import { renderReport, hydrateModel, REPORT_SECTIONS } from "./report.js";
+import { renderReport, hydrateModel, hydrateProvenance, REPORT_SECTIONS } from "./report.js";
 import {
   resolveTarget, pollDecision, STAGES, CHECKLIST_STAGES, stageInfo, sortReports, relativeTime,
   saveInflight, loadInflight, clearInflight,
@@ -421,6 +421,7 @@ function mountReport(report, meta, partial = false) {
       <div id="report-body">${renderReport(report)}</div>
     </div>`;
   hydrateModel(report, qs("#report-body"));
+  hydrateProvenance(qs("#report-body"));
   qs("#back-btn").addEventListener("click", () => goLanding());
   qs("#regen-btn").addEventListener("click", () => startAnalyze({ name: report?.meta?.company || meta.name, ticker: report?.meta?.ticker || meta.ticker }, true));
   wireExport("#export-pdf", "Preparing PDF…", () => exportPdf(report), "Couldn't build the PDF — check your connection and try again.");

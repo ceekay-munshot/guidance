@@ -37,7 +37,20 @@
           "properties": {
             "transcript_url": { "type": ["string", "null"], "description": "Link to the concall transcript, or null." },
             "ppt_url": { "type": ["string", "null"], "description": "Link to the investor presentation, or null." },
-            "concall_date": { "type": ["string", "null"], "format": "date", "description": "Date the earnings call was held, or null." }
+            "concall_date": { "type": ["string", "null"], "format": "date", "description": "Date the earnings call was held, or null." },
+            "web": {
+              "type": "array",
+              "description": "Optional list of web sources cited by the report (for the Sources panel). Each entry is the page a Web-sourced fact links to.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["url", "title"],
+                "properties": {
+                  "url": { "type": "string" },
+                  "title": { "type": "string" }
+                }
+              }
+            }
           }
         },
         "inputs": {
@@ -121,7 +134,9 @@
               "statement": { "type": "string", "description": "Verbatim-ish paraphrase of what management said." },
               "type": { "type": "string", "enum": ["hard", "directional"], "description": "'hard' = numeric commitment; 'directional' = qualitative lean." },
               "value": { "type": ["string", "null"], "description": "Extracted number/range if hard, else null." },
-              "source": { "$ref": "#/definitions/source" }
+              "source": { "$ref": "#/definitions/source" },
+              "quote": { "type": ["string", "null"], "description": "Verbatim span from the source, copied word-for-word so it is findable via Ctrl+F in the linked document. Optional; null when no clean verbatim quote exists." },
+              "source_url": { "type": ["string", "null"], "description": "Specific source URL for this fact (mainly Web facts; Transcript/PPT resolve to meta.sources by source category). Optional." }
             }
           }
         },
@@ -136,7 +151,9 @@
               "theme": { "type": "string" },
               "stance": { "type": "string", "enum": ["Positive", "Negative", "Neutral"] },
               "evidence": { "type": "string" },
-              "source": { "$ref": "#/definitions/source" }
+              "source": { "$ref": "#/definitions/source" },
+              "quote": { "type": ["string", "null"], "description": "Verbatim span from the source, copied word-for-word so it is findable via Ctrl+F in the linked document. Optional; null when no clean verbatim quote exists." },
+              "source_url": { "type": ["string", "null"], "description": "Specific source URL for this fact (mainly Web facts; Transcript/PPT resolve to meta.sources by source category). Optional." }
             }
           }
         },
@@ -166,7 +183,8 @@
             "properties": {
               "trigger": { "type": "string" },
               "flag": { "type": "string", "enum": ["Yes", "No", "Partial"] },
-              "evidence": { "type": "string" }
+              "evidence": { "type": "string" },
+              "quote": { "type": ["string", "null"], "description": "Verbatim span from the transcript backing this trigger, copied word-for-word so it is findable via Ctrl+F. Optional; null when no clean quote exists." }
             }
           }
         },
@@ -193,7 +211,9 @@
             "properties": {
               "risk": { "type": "string" },
               "type": { "type": "string", "description": "Risk category, e.g. 'Demand', 'Regulatory', 'Concentration'." },
-              "source": { "$ref": "#/definitions/source" }
+              "source": { "$ref": "#/definitions/source" },
+              "quote": { "type": ["string", "null"], "description": "Verbatim span from the source, copied word-for-word so it is findable via Ctrl+F in the linked document. Optional; null when no clean verbatim quote exists." },
+              "source_url": { "type": ["string", "null"], "description": "Specific source URL for this risk (Web facts carry the citation URL). Optional." }
             }
           }
         },
@@ -234,7 +254,9 @@
         "properties": {
           "point": { "type": "string" },
           "falsifier": { "type": "string", "description": "What we'd have to see to conclude this point is wrong." },
-          "source": { "$ref": "#/definitions/source" }
+          "source": { "$ref": "#/definitions/source" },
+          "quote": { "type": ["string", "null"], "description": "Verbatim span from the source, copied word-for-word so it is findable via Ctrl+F in the linked document. Optional; null when no clean verbatim quote exists." },
+          "source_url": { "type": ["string", "null"], "description": "Specific source URL for this point (mainly Web facts; Transcript/PPT resolve to meta.sources by source category). Optional." }
         }
       }
     },
@@ -249,7 +271,9 @@
         "properties": {
           "point": { "type": "string" },
           "falsifier": { "type": "string" },
-          "source": { "$ref": "#/definitions/source" }
+          "source": { "$ref": "#/definitions/source" },
+          "quote": { "type": ["string", "null"], "description": "Verbatim span from the source, copied word-for-word so it is findable via Ctrl+F in the linked document. Optional; null when no clean verbatim quote exists." },
+          "source_url": { "type": ["string", "null"], "description": "Specific source URL for this point (mainly Web facts; Transcript/PPT resolve to meta.sources by source category). Optional." }
         }
       }
     },

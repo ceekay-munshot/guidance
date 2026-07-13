@@ -108,6 +108,7 @@ jobs:
           node worker/test/worker.test.mjs
           node worker/test/analyze.test.mjs
           node worker/test/export.test.mjs
+          node worker/test/provenance.test.mjs
 
       # No-save install (deps are NOT committed — see pipeline/BUNDLE.md).
       - name: Install deps (no-save) + Chromium

@@ -49,12 +49,15 @@ export const EXTRACTION_JSON_SCHEMA = {
             statement: { type: "string" },
             type: { type: "string", enum: ["hard", "directional"] },
             value: { type: ["string", "null"] },
+            // Verbatim sentence from the transcript/PPT backing this (copy word-for-word so it is
+            // Ctrl+F-able). null when no single clean sentence backs it. Verified against the source.
+            quote: { type: ["string", "null"] },
           },
-          ["metric", "horizon", "statement", "type", "value"]
+          ["metric", "horizon", "statement", "type", "value", "quote"]
         )),
         themes: arr(strObj(
-          { theme: { type: "string" }, stance: { type: "string", enum: ["Positive", "Negative", "Neutral"] }, evidence: { type: "string" } },
-          ["theme", "stance", "evidence"]
+          { theme: { type: "string" }, stance: { type: "string", enum: ["Positive", "Negative", "Neutral"] }, evidence: { type: "string" }, quote: { type: ["string", "null"] } },
+          ["theme", "stance", "evidence", "quote"]
         )),
         tone_shift_vs_last_quarter: { type: "string" },
         expansion_flags: arr(strObj(
@@ -62,8 +65,8 @@ export const EXTRACTION_JSON_SCHEMA = {
           ["metric", "yoy_delta", "qoq_delta", "driver"]
         )),
         thesis_triggers: arr(strObj(
-          { trigger: { type: "string" }, flag: { type: "string", enum: ["Yes", "No", "Partial"] }, evidence: { type: "string" } },
-          ["trigger", "flag", "evidence"]
+          { trigger: { type: "string" }, flag: { type: "string", enum: ["Yes", "No", "Partial"] }, evidence: { type: "string" }, quote: { type: ["string", "null"] } },
+          ["trigger", "flag", "evidence", "quote"]
         )),
         classification: arr(strObj(
           { tag: { type: "string", enum: CLASSIFICATION_TAGS }, justification: { type: "string" } },

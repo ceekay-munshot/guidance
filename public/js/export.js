@@ -11,6 +11,8 @@
 // Every field is guarded (missing / null safe); the PDF additionally sanitises non-Latin-1 glyphs
 // (₹, arrows) that jsPDF's core fonts can't draw.
 
+import { resolveSourceUrl, collectWebSources, hostOf } from "./provenance.js";
+
 // ── brand palette (STEP 12 spec) ─────────────────────────────────────────────
 export const BRAND = {
   indigo: "#6366F1", violet: "#A855F7", magenta: "#EC4899",
@@ -94,7 +96,10 @@ export function reportContent(report) {
   const fin = r.financials || {};
   const val = r.valuation || {};
   const ns = r.next_steps || {};
+  const urlOf = (src, fact) => resolveSourceUrl(src, fact, m) || "";
   return {
+    sources: { transcript_url: m.sources && m.sources.transcript_url, ppt_url: m.sources && m.sources.ppt_url, concall_date: m.sources && m.sources.concall_date },
+    webSources: collectWebSources(r),
     company: dash(m.company),
     ticker: dash(m.ticker),
     quarter: dash(m.quarter),
@@ -118,17 +123,18 @@ export function reportContent(report) {
     guidance: arr(concall.guidance).map((g) => ({
       metric: S(g && g.metric), horizon: S(g && g.horizon), statement: S(g && g.statement),
       type: S(g && g.type), value: g && g.value != null ? S(g.value) : "", source: S(g && g.source),
+      quote: S(g && g.quote), url: urlOf(g && g.source, g),
     })),
-    themes: arr(concall.themes).map((t) => ({ theme: S(t && t.theme), stance: S(t && t.stance), evidence: S(t && t.evidence), source: S(t && t.source) })),
+    themes: arr(concall.themes).map((t) => ({ theme: S(t && t.theme), stance: S(t && t.stance), evidence: S(t && t.evidence), source: S(t && t.source), quote: S(t && t.quote), url: urlOf(t && t.source, t) })),
     toneShift: S(concall.tone_shift_vs_last_quarter),
     expansion: arr(concall.expansion_flags).map((f) => ({ metric: S(f && f.metric), yoy: f && f.yoy_delta != null ? S(f.yoy_delta) : "—", qoq: f && f.qoq_delta != null ? S(f.qoq_delta) : "—", driver: S(f && f.driver) })),
     triggers: arr(concall.thesis_triggers).map((t) => ({ trigger: S(t && t.trigger), flag: S(t && t.flag), evidence: S(t && t.evidence) })),
     classification: arr(concall.classification).map((c) => ({ tag: S(c && c.tag), justification: S(c && c.justification) })),
-    risks: arr(concall.risks).map((x) => ({ risk: S(x && x.risk), type: S(x && x.type), source: S(x && x.source) })),
+    risks: arr(concall.risks).map((x) => ({ risk: S(x && x.risk), type: S(x && x.type), source: S(x && x.source), quote: S(x && x.quote), url: urlOf(x && x.source, x) })),
     mgmtTone: arr(concall.management_tone).map((t) => ({ theme: S(t && t.theme), tone: S(t && t.tone), anchor: S(t && t.anchor) })),
     analystTone: { hot: arr(concall.analyst_tone && concall.analyst_tone.hot_themes).map(S), tenor: S(concall.analyst_tone && concall.analyst_tone.qa_tenor) },
-    thesis: arr(r.thesis).map((t) => ({ point: S(t && t.point), falsifier: S(t && t.falsifier), source: S(t && t.source) })),
-    antiThesis: arr(r.anti_thesis).map((t) => ({ point: S(t && t.point), falsifier: S(t && t.falsifier), source: S(t && t.source) })),
+    thesis: arr(r.thesis).map((t) => ({ point: S(t && t.point), falsifier: S(t && t.falsifier), source: S(t && t.source), quote: S(t && t.quote), url: urlOf(t && t.source, t) })),
+    antiThesis: arr(r.anti_thesis).map((t) => ({ point: S(t && t.point), falsifier: S(t && t.falsifier), source: S(t && t.source), quote: S(t && t.quote), url: urlOf(t && t.source, t) })),
     model: {
       rows: arr(fin.rows).map((x) => ({ key: S(x && x.key), metric: S(x && x.metric), unit: S(x && x.unit), fy26a: x && x.fy26a, fy27e: x && x.fy27e, fy28e: x && x.fy28e, driver: S(x && x.driver) })),
       growth: { fy27: fin.assumptions && fin.assumptions.revenue_growth && fin.assumptions.revenue_growth.fy27, fy28: fin.assumptions && fin.assumptions.revenue_growth && fin.assumptions.revenue_growth.fy28, basis: S(fin.assumptions && fin.assumptions.revenue_growth && fin.assumptions.revenue_growth.basis) },
@@ -228,6 +234,17 @@ export function buildPdfModel(report) {
   sections.push({
     kind: "verdict", id: "G", title: "Verdict", conviction: dash(c.verdict.conviction), color: convictionColor(c.verdict.conviction),
     note: P(c.verdict.note), monitorables: c.verdict.monitorables.map(P), triggers: c.verdict.triggers.map(P),
+  });
+
+  // H · Sources — clickable document + web links so provenance survives the export
+  sections.push({
+    kind: "sources", id: "H", title: "Sources & Provenance",
+    docs: [
+      { label: "Concall transcript", url: c.sources.transcript_url || null },
+      { label: "Investor presentation", url: c.sources.ppt_url || null },
+    ],
+    concallDate: c.concallDate,
+    web: c.webSources.map((w) => ({ title: P(w.title || hostOf(w.url)), url: w.url })),
   });
 
   return {
@@ -344,7 +361,33 @@ export function buildWorkbookModel(report) {
   ));
   if (c.valuation.sanity) { valuation.blocks.push({ type: "section", title: "Sanity check" }); valuation.blocks.push({ type: "bullets", items: [c.valuation.sanity] }); }
 
-  return { filename: exportFilename(report, "xlsx"), generated: fmtDate(c.generatedAt), sheets: [summary, concall, thesis, financials, valuation] };
+  // 6 · Sources — the provenance ledger: every cited fact with its source, verbatim quote and URL.
+  const sources = { name: "Sources", subtitle: sub, columns: [14, 46, 13, 54, 42], ncols: 5, blocks: [] };
+  sources.blocks.push({ type: "section", title: "Documents" });
+  sources.blocks.push({ type: "kv", pairs: [
+    ["Concall transcript", c.sources.transcript_url || "—", "link"],
+    ["Investor presentation", c.sources.ppt_url || "—", "link"],
+    ["Concall date", c.concallDate, "text"],
+  ] });
+  sources.blocks.push({ type: "section", title: "Cited facts (source · verbatim quote · link)" });
+  const cited = [
+    ...c.guidance.filter((g) => g.source).map((g) => ["Guidance", g.metric, g.source, g.quote || "—", g.url || "—"]),
+    ...c.themes.filter((t) => t.source).map((t) => ["Theme", t.theme, t.source, t.quote || "—", t.url || "—"]),
+    ...c.risks.filter((x) => x.source).map((x) => ["Risk", x.risk, x.source, x.quote || "—", x.url || "—"]),
+    ...c.thesis.filter((t) => t.source).map((t) => ["Thesis", t.point, t.source, t.quote || "—", t.url || "—"]),
+    ...c.antiThesis.filter((t) => t.source).map((t) => ["Anti-thesis", t.point, t.source, t.quote || "—", t.url || "—"]),
+  ];
+  sources.blocks.push(tbl(
+    ["Section", "Fact", "Source", "Verbatim quote", "URL"],
+    [{}, { wide: true }, { color: "source" }, { wide: true }, { link: true }],
+    cited,
+  ));
+  if (c.webSources.length) {
+    sources.blocks.push({ type: "section", title: "Web sources" });
+    sources.blocks.push(tbl(["Title", "URL"], [{ wide: true }, { link: true }], c.webSources.map((w) => [w.title || hostOf(w.url), w.url])));
+  }
+
+  return { filename: exportFilename(report, "xlsx"), generated: fmtDate(c.generatedAt), sheets: [summary, concall, thesis, financials, valuation, sources] };
 }
 
 // ── CSV fallback (pure) ──────────────────────────────────────────────────────
@@ -376,6 +419,13 @@ export function buildCsv(report) {
   L.push("");
   L.push(csvRow(["Verdict", c.verdict.conviction]));
   L.push(csvRow([c.verdict.note]));
+  L.push("");
+  L.push(csvRow(["Sources", "Section", "Source", "URL"]));
+  L.push(csvRow(["Concall transcript", "", "", c.sources.transcript_url || ""]));
+  L.push(csvRow(["Investor presentation", "", "", c.sources.ppt_url || ""]));
+  [...c.guidance.map((g) => ["Guidance", g.metric, g.source, g.url]),
+   ...c.risks.map((x) => ["Risk", x.risk, x.source, x.url])]
+    .filter((r) => r[3]).forEach((r) => L.push(csvRow([r[1], r[0], r[2], r[3]])));
   L.push("");
   L.push(csvRow([DISCLAIMER, "Generated " + fmtDate(c.generatedAt)]));
   return L.join("\r\n");
@@ -575,6 +625,30 @@ export function renderPdf(doc, model) {
         doc.setDrawColor(...rgb(sec.color)); doc.setLineWidth(0.6); doc.roundedRect(M - 6, boxTop - 6, W - M * 2 + 12, y - boxTop + 6, 4, 4, "S");
       }
       y += 12;
+    } else if (sec.kind === "sources") {
+      heading(sec.id, sec.title);
+      const trunc = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s || "");
+      const docLine = (label, url) => {
+        ensure(20);
+        doc.setFont("helvetica", "bold"); doc.setFontSize(9);
+        if (url) { doc.setTextColor(...rgb(BRAND.indigo)); doc.textWithLink(`${label}  (open)`, M, y, { url }); }
+        else { doc.setTextColor(...rgb(BRAND.muted)); doc.text(`${label} — not available`, M, y); }
+        y += 10;
+        if (url) { doc.setFont("helvetica", "normal"); doc.setFontSize(7); doc.setTextColor(...rgb(BRAND.muted)); doc.text(trunc(url, 110), M + 10, y); y += 12; }
+      };
+      sec.docs.forEach((d) => docLine(d.label, d.url));
+      if (sec.concallDate && sec.concallDate !== "—") paragraph(`Concall held: ${sec.concallDate}`, 8.5, BRAND.muted);
+      if (sec.web.length) {
+        y += 2; ensure(14); doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor(...rgb(BRAND.muted)); doc.text("Web sources", M, y); y += 10;
+        sec.web.forEach((w) => {
+          ensure(20);
+          doc.setFillColor(...rgb(BRAND.magenta)); doc.circle(M + 2.5, y - 2.4, 1.1, "F");
+          doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(...rgb(BRAND.indigo));
+          doc.textWithLink(w.title, M + 10, y, { url: w.url }); y += 9;
+          doc.setFontSize(7); doc.setTextColor(...rgb(BRAND.muted)); doc.text(trunc(w.url, 110), M + 10, y); y += 12;
+        });
+      }
+      y += 8;
     }
   }
 
@@ -630,8 +704,9 @@ export async function renderWorkbook(ExcelJS, model) {
 
   for (const sheet of model.sheets) {
     const ws = wb.addWorksheet(sheet.name, { views: [{ state: "frozen", ySplit: 2 }] });
-    const NC = 6; // band/section width
-    ws.columns = [{ width: 30 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 46 }];
+    const widths = sheet.columns || [30, 16, 16, 16, 16, 46];
+    const NC = sheet.ncols || widths.length; // band/section width
+    ws.columns = widths.map((w) => ({ width: w }));
     let row = 1;
     const merge = (r, n) => ws.mergeCells(r, 1, r, n);
 
@@ -655,9 +730,10 @@ export async function renderWorkbook(ExcelJS, model) {
         block.pairs.forEach((p, idx) => {
           const [label, value, type] = p;
           const lc = ws.getCell(row, 1); lc.value = label; lc.font = { bold: true, color: { argb: argb(BRAND.muted) } }; lc.border = thinBorder;
-          merge(row, NC); // value spans the rest — set after merge via first spanned cell
+          if (NC > 2) ws.mergeCells(row, 2, row, NC); // value spans cols 2..NC (keep the label in col 1)
           const vc = ws.getCell(row, 2);
           if (type === "cr" && isNum(value)) { vc.value = value; vc.numFmt = NUMFMT.cr; vc.alignment = { horizontal: "right" }; }
+          else if (type === "link" && typeof value === "string" && /^https?:\/\//.test(value)) { vc.value = { text: value, hyperlink: value }; vc.font = { color: { argb: argb(BRAND.indigo) }, underline: true }; }
           else { vc.value = value === "" || value == null ? "—" : value; }
           vc.border = thinBorder;
           if (idx % 2) { lc.fill = fill("#FAFAFF"); vc.fill = fill("#FAFAFF"); }
@@ -714,6 +790,7 @@ export async function renderWorkbook(ExcelJS, model) {
             if (meta.numFmt && isNum(v)) { c.value = v; c.numFmt = NUMFMT[meta.numFmt] || meta.numFmt; c.alignment = { horizontal: "right" }; }
             else if (meta.numFmt) { c.value = "—"; c.alignment = { horizontal: "right" }; }
             else { c.value = v === "" || v == null ? "—" : v; if (meta.align === "right") c.alignment = { horizontal: "right" }; }
+            if (meta.link && typeof v === "string" && /^https?:\/\//.test(v)) { c.value = { text: v, hyperlink: v }; c.font = { color: { argb: argb(BRAND.indigo) }, underline: true }; }
             if (meta.wide) c.alignment = { wrapText: true, vertical: "top", horizontal: "left" };
             if (meta.color === "source") c.fill = fill(sourceFillHex(v));
             else if (meta.color === "stance") { c.fill = fill(stanceFillHex(v)); c.font = { bold: true }; }

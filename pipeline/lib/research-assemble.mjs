@@ -58,13 +58,26 @@ export function buildRiskThesisMessages(report, web, { } = {}) {
  * risk; keeps each thesis/anti point's Web/Est. source; and ENFORCES a non-empty falsifier — any
  * point without one is dropped (recorded in `warnings`). Returns { report, warnings, dropped }.
  */
+/** Pull a trailing "(Source: <URL>)" citation out of a risk string → { text, url }. The prompt asks
+ *  the model to end each risk with this, so we lift the URL into source_url (clickable) and clean the
+ *  displayed text. The cleaned claim doubles as the deep-link target for the web page. */
+export function splitCitation(s) {
+  const str = String(s || "").trim();
+  const m = str.match(/\s*[([]?\s*(?:source|src)\s*[:\-]\s*(https?:\/\/[^\s)\]]+)\s*[)\]]?\s*$/i);
+  if (!m) return { text: str, url: null };
+  return { text: str.slice(0, m.index).trim().replace(/[\s—–,;-]+$/, ""), url: m[1] };
+}
+
 export function assembleResearch(report, llm, { generated_at } = {}) {
   const out = { ...(report || {}) };
   out.concall = { ...(report?.concall || {}) };
   const warnings = [];
   const dropped = [];
 
-  out.concall.risks = (llm.risks || []).map((r) => ({ risk: r.risk, type: r.type, source: "Web" }));
+  out.concall.risks = (llm.risks || []).map((r) => {
+    const { text, url } = splitCitation(r.risk);
+    return { risk: text, type: r.type, source: "Web", source_url: url, quote: text || null };
+  });
 
   const takePoints = (list, label) =>
     (list || [])

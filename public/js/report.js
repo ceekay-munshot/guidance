@@ -15,6 +15,7 @@
 // Reusable helpers: sourceTag(), stancePill(), toneBadge(), chip(), sectionCard(), table().
 
 import { escapeHtml } from "./ui.js";
+import { buildSourceLink, collectWebSources, hostOf } from "./provenance.js";
 
 // ── formatting ──────────────────────────────────────────────────────────────
 const num = (v) => (typeof v === "number" && isFinite(v) ? v.toLocaleString("en-IN") : null);
@@ -34,6 +35,33 @@ export function sourceTag(source) {
   if (!source) return "";
   const cls = SRC_STYLES[source] || "bg-slate-100 text-slate-600 ring-slate-200";
   return `<span class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium font-mono whitespace-nowrap ring-1 ring-inset ${cls}">${escapeHtml(source)}</span>`;
+}
+
+/**
+ * Interactive source chip for a specific fact — the traceability primitive.
+ *   • Opens the source document (transcript / deck / web page). For an HTML page the link is a
+ *     Chromium scroll-to-text deep link that highlights the verbatim quote; for a PDF it just opens
+ *     (browsers can't deep-link inside a PDF).
+ *   • When a verbatim `quote` exists, a small ⌕ button copies it so the reader can Ctrl+F in the
+ *     source (wired by hydrateProvenance). No linkable source (Est.) → the plain chip.
+ * `fact` may carry {source, quote|anchor, source_url}; `meta` supplies the doc URLs.
+ */
+export function sourceRef(fact, meta) {
+  const label = (fact && fact.source) || "";
+  if (!label) return "";
+  const cls = SRC_STYLES[label] || "bg-slate-100 text-slate-600 ring-slate-200";
+  const chip = `inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium font-mono whitespace-nowrap ring-1 ring-inset ${cls}`;
+  const link = buildSourceLink(fact, meta);
+  if (link.kind === "none") return `<span class="${chip}">${escapeHtml(label)}</span>`;
+  const q = link.quote ? escapeHtml(link.quote) : "";
+  const hint = link.kind === "pdf" ? "Opens the source PDF — Ctrl+F the quote" : "Opens the source and highlights the quote";
+  const copy = link.quote
+    ? `<button type="button" class="src-copy inline-flex items-center justify-center w-4 h-4 rounded-full ring-1 ring-inset ring-slate-200 text-slate-400 hover:text-indigo-600 hover:ring-indigo-200" data-quote="${q}" aria-label="Copy quote to search in the source" title="Copy the quote, then Ctrl+F in the source"><i data-lucide="search" class="w-2.5 h-2.5"></i></button>`
+    : "";
+  return `<span class="inline-flex items-center gap-1">`
+    + `<a href="${escapeHtml(link.href)}" target="_blank" rel="noopener noreferrer" class="${chip} hover:underline" title="${q || escapeHtml(hint)}">${escapeHtml(label)}<i data-lucide="external-link" class="w-2.5 h-2.5"></i></a>`
+    + copy
+    + `</span>`;
 }
 
 const STANCE_STYLES = {
@@ -223,7 +251,7 @@ function guidanceSection(report) {
           escapeHtml(dash(x.horizon)),
           escapeHtml(dash(x.statement)),
           typeChip(x.type),
-          sourceTag(x.source) || "—",
+          sourceRef(x, report.meta) || "—",
         ])
       )
     : empty("No guidance captured.");
@@ -241,7 +269,7 @@ function themesSection(report) {
           <div class="rounded-xl border border-slate-100 p-4">
             <div class="flex items-center justify-between gap-3 mb-2">
               <span class="font-semibold text-slate-800">${escapeHtml(dash(t.theme))}</span>
-              <div class="flex items-center gap-2 shrink-0">${stancePill(t.stance)}${sourceTag(t.source)}</div>
+              <div class="flex items-center gap-2 shrink-0">${stancePill(t.stance)}${sourceRef(t, report.meta)}</div>
             </div>
             <p class="text-sm text-slate-600 leading-relaxed">${escapeHtml(dash(t.evidence))}</p>
           </div>`
@@ -341,7 +369,7 @@ function risksSection(report) {
   const body = risks.length
     ? table(
         ["Risk", "Type", "Source"],
-        risks.map((r) => [escapeHtml(dash(r.risk)), `<span class="text-slate-600">${escapeHtml(dash(r.type))}</span>`, sourceTag(r.source) || "—"])
+        risks.map((r) => [escapeHtml(dash(r.risk)), `<span class="text-slate-600">${escapeHtml(dash(r.type))}</span>`, sourceRef(r, report.meta) || "—"])
       )
     : `<div class="flex items-center gap-2 text-sm text-slate-400"><i data-lucide="shield-check" class="w-4 h-4 text-emerald-500"></i>No material risks surfaced.</div>`;
   return sectionCard("C.6 · Risks", body);
@@ -367,7 +395,7 @@ function managementToneSection(report) {
           <div class="rounded-xl border border-slate-100 p-4">
             <div class="flex items-center justify-between gap-3 mb-2">
               <span class="font-semibold text-slate-800">${escapeHtml(dash(t.theme))}</span>
-              ${toneBadge(t.tone)}
+              <div class="flex items-center gap-2 shrink-0">${toneBadge(t.tone)}${sourceRef({ source: "Transcript", quote: t.anchor }, report.meta)}</div>
             </div>
             <p class="text-sm text-slate-500 italic border-l-2 border-slate-200 pl-3">${escapeHtml(dash(t.anchor))}</p>
           </div>`
@@ -406,7 +434,7 @@ function analystToneSection(report) {
 }
 
 // ── 12 · D Thesis / Anti-thesis (paired claim ↔ falsifier) ───────────────────
-function pointCard(item, accent) {
+function pointCard(item, accent, meta) {
   const dot = accent === "thesis" ? "#10b981" : "#f43f5e";
   return `
     <div class="rounded-xl border border-slate-100 bg-white/60 p-4">
@@ -415,7 +443,7 @@ function pointCard(item, accent) {
         <div class="min-w-0">
           <p class="text-sm text-slate-800 font-medium">${escapeHtml(dash(item.point))}</p>
           <p class="text-xs text-slate-400 mt-1.5"><span class="font-semibold">Proven wrong if:</span> ${escapeHtml(dash(item.falsifier))}</p>
-          <div class="mt-2">${sourceTag(item.source)}</div>
+          <div class="mt-2">${sourceRef(item, meta)}</div>
         </div>
       </div>
     </div>`;
@@ -428,7 +456,7 @@ function thesisAntiThesisSection(report) {
       <h4 class="font-display font-bold mb-3 flex items-center gap-2 ${txt}">
         <i data-lucide="${icon}" class="w-4 h-4"></i>${escapeHtml(title)}
       </h4>
-      <div class="space-y-3">${items.length ? items.map((x) => pointCard(x, accent)).join("") : empty()}</div>
+      <div class="space-y-3">${items.length ? items.map((x) => pointCard(x, accent, report.meta)).join("") : empty()}</div>
     </div>`;
   const body = `
     <div class="grid md:grid-cols-2 gap-4">
@@ -842,6 +870,48 @@ export function hydrateModel(report, root) {
   render();
 }
 
+// ── Sources panel (bibliography) ─────────────────────────────────────────────
+function sourcesSection(report) {
+  const s = report.meta?.sources ?? {};
+  const docRow = (label, url, icon) => url
+    ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="flex items-center gap-2 text-sm text-indigo-600 hover:underline"><i data-lucide="${icon}" class="w-4 h-4 shrink-0"></i>${escapeHtml(label)}<i data-lucide="external-link" class="w-3 h-3 opacity-60"></i></a>`
+    : `<span class="flex items-center gap-2 text-sm text-slate-400"><i data-lucide="${icon}" class="w-4 h-4 shrink-0"></i>${escapeHtml(label)} — not available</span>`;
+  const docs = [
+    docRow("Concall transcript", s.transcript_url, "file-text"),
+    docRow("Investor presentation", s.ppt_url, "presentation"),
+    s.concall_date ? `<span class="flex items-center gap-2 text-sm text-slate-500"><i data-lucide="calendar" class="w-4 h-4 shrink-0"></i>Concall held ${escapeHtml(s.concall_date)}</span>` : "",
+  ].filter(Boolean).join("");
+  const web = collectWebSources(report);
+  const webList = web.length
+    ? `<div class="mt-5"><h4 class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">Web sources</h4><ul class="space-y-2">${web
+        .map((w) => `<li class="flex items-baseline gap-2"><i data-lucide="globe" class="w-3.5 h-3.5 text-slate-400 shrink-0 translate-y-0.5"></i><a href="${escapeHtml(w.url)}" target="_blank" rel="noopener noreferrer" class="text-sm text-indigo-600 hover:underline">${escapeHtml(w.title || hostOf(w.url))}</a><span class="text-xs text-slate-400 font-mono">${escapeHtml(hostOf(w.url))}</span></li>`)
+        .join("")}</ul></div>`
+    : "";
+  const note = `<p class="text-xs text-slate-400 mt-5 border-t border-slate-100 pt-3">Every sourced fact links to where it came from. Transcript &amp; deck open as PDFs — tap <i data-lucide="search" class="inline w-3 h-3"></i> to copy the exact quote, then Ctrl+F it in the document. Web sources open scrolled to the highlighted line.</p>`;
+  return sectionCard("Sources &amp; provenance", `<div class="grid sm:grid-cols-2 gap-3">${docs}</div>${webList}${note}`);
+}
+
+/** Wire the ⌕ "copy quote to search" buttons (call after renderReport mounts). Copies the verbatim
+ *  quote so the reader can Ctrl+F in the (PDF) source; flips to a ✓ briefly. No-op if none present. */
+export function hydrateProvenance(root) {
+  if (!root) return;
+  root.querySelectorAll(".src-copy").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const q = btn.getAttribute("data-quote") || "";
+      try { await navigator.clipboard.writeText(q); } catch { /* clipboard may be blocked in the sandbox */ }
+      const prev = btn.innerHTML;
+      btn.innerHTML = `<i data-lucide="check" class="w-2.5 h-2.5"></i>`;
+      btn.classList.add("text-emerald-600", "ring-emerald-200");
+      if (window.lucide?.createIcons) window.lucide.createIcons();
+      setTimeout(() => {
+        btn.innerHTML = prev; btn.classList.remove("text-emerald-600", "ring-emerald-200");
+        if (window.lucide?.createIcons) window.lucide.createIcons();
+      }, 1200);
+    });
+  });
+}
+
 // ── entry point ─────────────────────────────────────────────────────────────
 /** The in-report section-nav map (ids must match the anchors below). Consumed by app.js's scroll-spy. */
 export const REPORT_SECTIONS = [
@@ -852,6 +922,7 @@ export const REPORT_SECTIONS = [
   { id: "sec-model", label: "Model" },
   { id: "sec-valuation", label: "Valuation" },
   { id: "sec-verdict", label: "Verdict" },
+  { id: "sec-sources", label: "Sources" },
 ];
 
 const anchor = (id, html) => `<div id="${id}">${html}</div>`;
@@ -875,5 +946,6 @@ export function renderReport(report) {
     anchor("sec-model", financialModelSection(r)),
     anchor("sec-valuation", valuationSection(r)),
     anchor("sec-verdict", convictionSection(r)),
+    anchor("sec-sources", sourcesSection(r)),
   ].join("\n");
 }
