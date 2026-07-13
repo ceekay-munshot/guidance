@@ -194,7 +194,7 @@ jobs:
       # Step 10/11: on ANY failure above, mark the job errored so the client stops polling and shows why.
       - name: KV — mark error
         if: ${{ inputs.slug != '' && failure() }}
-        run: node pipeline/kv-put.mjs error "$SLUG" "Couldn't complete the analysis — the company may not be resolvable on Screener, or a step errored."
+        run: node pipeline/kv-put.mjs error "$SLUG" "We couldn't finish this analysis — a source (financials, transcript or deck) may have been temporarily unavailable. Please try again shortly."
 
       - name: Upload bundle artifact
         if: always()

@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { resolveCompany, parseCompanyPage } from "./lib/screener.mjs";
-import { fetchDoc, UA } from "./lib/fetchers.mjs";
+import { fetchDoc, UA, shouldDegradeToPpt } from "./lib/fetchers.mjs";
 import { extractPdfText } from "./lib/pdf.mjs";
 import { selfCheck } from "./lib/selfcheck.mjs";
 import { kvPut, kvConfigured } from "./lib/kv.mjs";
@@ -52,7 +52,11 @@ async function main() {
 
   const diagnostics = { notes: [], attempts: {} };
   const browser = await chromium.launch({ args: ["--no-sandbox"] });
-  const context = await browser.newContext({ userAgent: UA });
+  // ignoreHTTPSErrors: many SME/small-cap company sites host their transcript/deck PDFs behind a
+  // broken or incomplete TLS cert chain ("unable to verify the first certificate"). We're only
+  // downloading a PUBLIC document (no credentials sent to these hosts), so proceed past cert errors
+  // rather than lose the transcript. Screener itself is fetched over a valid cert regardless.
+  const context = await browser.newContext({ userAgent: UA, ignoreHTTPSErrors: true });
   const page = await context.newPage();
 
   // context.request shares cookies with the browser context (login + NSE warm-up carry over).
@@ -164,6 +168,16 @@ async function main() {
     const transcript = await grab("transcript", latest?.transcript);
     const ppt = await grab("ppt", latest?.ppt);
 
+    // Degrade to PPT-only rather than HARD-FAIL: Screener listed a transcript but its download failed
+    // (broken cert / timeout / blocked host) and we DID get a usable deck. The client still gets a
+    // report (Section C derived from the PPT) instead of the scary error screen.
+    let effectiveTranscriptAvailable = transcript_available;
+    if (transcript_available && shouldDegradeToPpt(transcript?.text?.trim().length, ppt?.text?.trim().length)) {
+      effectiveTranscriptAvailable = false;
+      diagnostics.notes.push(`PPT-only fallback: the transcript (${latest?.transcript}) could not be fetched [${(diagnostics.attempts.transcript || []).join(" | ")}] — using the investor PPT for Section C.`);
+      log.warn("transcript fetch failed but a usable PPT is present — degrading to PPT-only (no hard fail)");
+    }
+
     // ── 6. Assemble the bundle with provenance ──
     const src = resolved.screener_url;
     const prov = (source, note) => ({ source, fetched_at, ...(note ? { note } : {}) });
@@ -181,7 +195,7 @@ async function main() {
         quarter,
         quarter_confirmed,
         expected_quarter: expQ,
-        transcript_available,
+        transcript_available: effectiveTranscriptAvailable,
       },
       // → report.schema.json meta.inputs
       inputs: {
@@ -240,6 +254,15 @@ async function main() {
     await writeFile(join(outDir, "bundle.json"), JSON.stringify(bundle, null, 2));
     if (transcript?.text) await writeFile(join(outDir, "transcript.txt"), transcript.text);
     if (ppt?.text) await writeFile(join(outDir, "ppt.txt"), ppt.text);
+    // On failure, leave a SPECIFIC, human reason (kv-put error surfaces it) so the client never sees
+    // the misleading "may not be resolvable on Screener" when the real cause is a blocked document.
+    if (!check.ok) {
+      const noDocs = !(transcript?.text) && !(ppt?.text);
+      const reason = noDocs
+        ? "We couldn't read this company's earnings documents — the transcript and investor deck were both unavailable or blocked at the source. Please try again shortly."
+        : `We couldn't finish this analysis: ${check.critical.join("; ")}. Please try again shortly.`;
+      await writeFile(join(outDir, "error.txt"), reason).catch(() => {});
+    }
     log.step(`Wrote pipeline/out/${slug}/  (bundle.json${transcript?.text ? " + transcript.txt" : ""}${ppt?.text ? " + ppt.txt" : ""})`);
 
     printSummary(bundle);

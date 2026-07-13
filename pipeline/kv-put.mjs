@@ -67,7 +67,11 @@ async function main() {
       await kvPut(`status:${slug}`, JSON.stringify({ state: "running", stage, updated_at: new Date().toISOString() }));
       log.ok(`KV status:${slug} = running (${stage})`);
     } else if (cmd === "error") {
-      await kvPut(`status:${slug}`, JSON.stringify({ state: "error", updated_at: new Date().toISOString(), message: arg4 || arg3 || "Analysis failed." }));
+      // Prefer a specific reason a pipeline step left behind (pipeline/out/<slug>/error.txt) over the
+      // generic workflow message, so the client sees WHY it failed, not a misleading catch-all.
+      let message = arg4 || arg3 || "Analysis failed.";
+      try { const specific = (await readFile(join(OUT_ROOT, slug, "error.txt"), "utf8")).trim(); if (specific) message = specific; } catch { /* no specific reason */ }
+      await kvPut(`status:${slug}`, JSON.stringify({ state: "error", updated_at: new Date().toISOString(), message }));
       log.ok(`KV status:${slug} = error`);
     } else if (cmd === "report") {
       const path = await findReportJson();
