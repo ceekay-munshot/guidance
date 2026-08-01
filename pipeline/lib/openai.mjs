@@ -11,8 +11,19 @@ const PRICES = {
   "gpt-4o-mini": [0.15, 0.6],
 };
 
-/** Backoff before each retry of a TRANSIENT failure. Three retries ≈ 23s of waiting, worst case. */
+/** Backoff before each retry of a TRANSIENT failure. */
 const RETRY_DELAYS_MS = [2000, 6000, 15000];
+
+/**
+ * Hard ceiling on the WALL-CLOCK time one provider may consume across all of its attempts.
+ *
+ * The backoff sleeps only add ~23s, but a HUNG connection — precisely the failure the retries exist
+ * to survive — burns the full per-attempt timeout every time. Four 180s attempts would pin a single
+ * step for ~12m before the fallback provider is even tried, and the job's `timeout-minutes: 20`
+ * has to cover document fetching plus all five LLM stages. This budget bounds it: once spent, the
+ * provider is declared unusable and callModel moves on, so failover happens in minutes, not tens.
+ */
+export const PROVIDER_BUDGET_MS = 240000; // 4 minutes
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -108,13 +119,18 @@ async function attemptStructured({ apiKey, model, messages, schema, schemaName, 
  * backoff. Returns { data, usage, model }. Throws a classified error (`.kind`, `.retryable`,
  * `.userMessage`) on model refusal / unparseable content / a failure worth surfacing.
  */
-export async function callStructured({ apiKey, model, messages, schema, schemaName = "extract", temperature = 0.1, maxTokens = 8000, timeoutMs = 180000, retries = RETRY_DELAYS_MS.length, onRetry = null }) {
+export async function callStructured({ apiKey, model, messages, schema, schemaName = "extract", temperature = 0.1, maxTokens = 8000, timeoutMs = 180000, budgetMs = PROVIDER_BUDGET_MS, retries = RETRY_DELAYS_MS.length, onRetry = null }) {
+  const startedAt = Date.now();
+  const leftMs = () => budgetMs - (Date.now() - startedAt);
   for (let attempt = 0; ; attempt++) {
+    // Never let one attempt outlive the budget — a hang is capped by whatever time is left.
+    const attemptTimeout = Math.max(1000, Math.min(timeoutMs, leftMs()));
     try {
-      return await attemptStructured({ apiKey, model, messages, schema, schemaName, temperature, maxTokens, timeoutMs });
+      return await attemptStructured({ apiKey, model, messages, schema, schemaName, temperature, maxTokens, timeoutMs: attemptTimeout });
     } catch (e) {
       if (!e.retryable || attempt >= retries) throw e;
       const wait = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
+      if (leftMs() <= wait) { e.message += ` (gave up: ${Math.round(budgetMs / 1000)}s provider budget spent)`; throw e; }
       onRetry?.({ attempt: attempt + 1, of: retries, waitMs: wait, error: e });
       await sleep(wait);
     }

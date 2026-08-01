@@ -87,13 +87,26 @@ export function assessValuationRichness(fwdPe, ctx = {}) {
  * is positive BUT the forward multiple is rich vs history/peer, flags the disconnect explicitly with
  * the real median numbers. When benchmarks are missing, says so rather than inventing them.
  */
-export function buildSanityCheck({ valuation, inputs, currentPe, richness, positiveTone }) {
+export function buildSanityCheck({ valuation, inputs, currentPe, richness, positiveTone, lender = false }) {
   const money = (v) => `₹${Math.round(numOr(v, 0)).toLocaleString("en-IN")}cr`;
   const x = (v) => (v == null ? "n.m." : `${v}x`);
   const out = [];
-  out.push(
-    `At ₹${inputs.cmp} (mkt cap ${money(valuation.market_cap_cr)}, EV ${money(valuation.ev_cr)} incl. ${money(inputs.net_debt_cr)} net debt) the stock trades at ${x(valuation.pe.fy27e)} FY27E and ${x(valuation.pe.fy28e)} FY28E P/E, ${x(valuation.ev_ebitda.fy27e)} FY27E EV/EBITDA and ${x(valuation.price_sales.fy27e)} FY27E P/S.`
-  );
+  if (lender) {
+    // For a bank/NBFC, borrowings are funding rather than leverage and interest is a cost of revenue,
+    // so EV, net debt and EV/EBITDA don't mean what they mean for an operating company — and the
+    // "EBITDA" line is really Screener's Financing Profit. Lead with the multiples that DO apply and
+    // say plainly that the enterprise-value ones don't, rather than quoting them without comment.
+    out.push(
+      `At ₹${inputs.cmp} (mkt cap ${money(valuation.market_cap_cr)}) the stock trades at ${x(valuation.pe.fy27e)} FY27E and ${x(valuation.pe.fy28e)} FY28E P/E.`
+    );
+    out.push(
+      `This is a lender: borrowings are its raw material, not leverage, and interest is a cost of revenue — so net debt, EV and EV/EBITDA are NOT meaningful here, and the "EBITDA" line is Screener's Financing Profit (already net of interest). Judge the valuation on P/E, P/B and RoA.`
+    );
+  } else {
+    out.push(
+      `At ₹${inputs.cmp} (mkt cap ${money(valuation.market_cap_cr)}, EV ${money(valuation.ev_cr)} incl. ${money(inputs.net_debt_cr)} net debt) the stock trades at ${x(valuation.pe.fy27e)} FY27E and ${x(valuation.pe.fy28e)} FY28E P/E, ${x(valuation.ev_ebitda.fy27e)} FY27E EV/EBITDA and ${x(valuation.price_sales.fy27e)} FY27E P/S.`
+    );
+  }
   const bench = [];
   if (richness.hist_median_pe != null) bench.push(`its ~${richness.hist_median_pe}x 5-yr median P/E`);
   if (richness.peer_median_pe != null) bench.push(`a ~${richness.peer_median_pe}x peer median`);

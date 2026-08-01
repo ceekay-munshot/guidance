@@ -151,7 +151,67 @@ globalThis.fetch = async (url) => {
   const r = await callModel(CALL);
   ok(r.provider === "openai" && r.data.ok === true && hosts.length === 2, "a transient rate-limit 429 is retried and recovers");
 }
+// 3d. A hung provider must not eat the job's 20-minute budget before failover. With the budget
+// spent, callStructured stops retrying instead of burning 4 × timeoutMs on a dead connection.
+hosts = [];
+{
+  const { callStructured } = await import("../lib/openai.mjs");
+  globalThis.fetch = async (url) => { hosts.push(new URL(url).host); return res(429, JSON.stringify({ error: { code: "rate_limit_exceeded" } })); };
+  let thrown = null;
+  try { await callStructured({ apiKey: "k", model: "m", messages: [], schema: {}, budgetMs: 50 }); } catch (e) { thrown = e; }
+  ok(hosts.length === 1, "an exhausted provider budget stops the retry loop after one attempt");
+  ok(/budget spent/.test(thrown?.message || ""), "and the error says the budget was the reason");
+}
 globalThis.fetch = realFetch;
+
+// ── 4. the verifier must never be the model that produced the extraction ──
+const { chooseVerifier } = await import("../verify-extract.mjs");
+const withEnv = (env, fn) => {
+  const saved = { OPENAI_API_KEY: process.env.OPENAI_API_KEY, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY, VERIFY_MODEL: process.env.VERIFY_MODEL };
+  for (const k of Object.keys(saved)) delete process.env[k];
+  Object.assign(process.env, env);
+  try { return fn(); } finally { for (const k of Object.keys(saved)) { delete process.env[k]; if (saved[k] !== undefined) process.env[k] = saved[k]; } }
+};
+{
+  const v = withEnv({ OPENAI_API_KEY: "o", ANTHROPIC_API_KEY: "a" }, () => chooseVerifier({ provider: "openai", model: "gpt-4.1-2025-04-14" }));
+  ok(v?.provider === "anthropic", "openai extraction + Anthropic key → cross-provider audit (unchanged)");
+}
+{
+  const v = withEnv({ OPENAI_API_KEY: "o" }, () => chooseVerifier({ provider: "openai", model: "gpt-4.1" }));
+  ok(v?.provider === "openai" && v.model === "gpt-4o", "openai extraction, no Anthropic key → a different OpenAI model (unchanged)");
+}
+{
+  // The failover case: extraction already ran on Anthropic, so the audit must NOT also be Anthropic.
+  const v = withEnv({ OPENAI_API_KEY: "o", ANTHROPIC_API_KEY: "a" }, () => chooseVerifier({ provider: "anthropic", model: "claude-sonnet-5" }));
+  ok(v?.provider === "openai", "Anthropic extraction → audit flips to OpenAI, not the same model");
+}
+{
+  const v = withEnv({ ANTHROPIC_API_KEY: "a" }, () => chooseVerifier({ provider: "anthropic", model: "claude-sonnet-5" }));
+  ok(v === null, "Anthropic extraction with only an Anthropic key → no independent verifier, audit skipped");
+}
+{
+  const v = withEnv({ ANTHROPIC_API_KEY: "a", VERIFY_MODEL: "claude-haiku-4-5" }, () => chooseVerifier({ provider: "anthropic", model: "claude-sonnet-5" }));
+  ok(v?.provider === "anthropic" && v.model === "claude-haiku-4-5", "…unless VERIFY_MODEL names a genuinely different model");
+}
+{
+  const v = withEnv({ OPENAI_API_KEY: "o", ANTHROPIC_API_KEY: "a" }, () => chooseVerifier({}));
+  ok(v?.provider === "anthropic", "a legacy report with no _step7.provider still audits cross-provider");
+}
+
+// ── 5. a lender's valuation prose must say EV/EBITDA doesn't apply ──
+const { buildSanityCheck } = await import("../lib/model.mjs");
+const VAL = { market_cap_cr: 16220, ev_cr: 24420, pe: { fy27e: 13.2, fy28e: 11.1 }, ev_ebitda: { fy27e: 15.4, fy28e: 13.0 }, price_sales: { fy27e: 4.5 } };
+{
+  const s = buildSanityCheck({ valuation: VAL, inputs: { cmp: 548, net_debt_cr: 8200 }, currentPe: 14, richness: {}, positiveTone: true, lender: true });
+  ok(/not meaningful/i.test(s), "lender prose states EV/EBITDA and net debt are not meaningful");
+  ok(/Financing Profit/i.test(s), "…and that the EBITDA line is Screener's Financing Profit");
+  ok(!/15\.4x FY27E EV\/EBITDA/.test(s), "…and does not quote an EV/EBITDA multiple as if it applied");
+  ok(/P\/E/.test(s), "…while still giving the P/E that does apply");
+}
+{
+  const s = buildSanityCheck({ valuation: VAL, inputs: { cmp: 7689, net_debt_cr: 1272 }, currentPe: 40, richness: {}, positiveTone: true });
+  ok(/EV\/EBITDA/.test(s) && !/not meaningful/i.test(s), "a normal company's prose is unchanged");
+}
 
 console.log(fails === 0 ? "\nFAILURE-MODE OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);
 process.exit(fails ? 1 : 0);

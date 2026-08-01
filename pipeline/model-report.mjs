@@ -61,7 +61,7 @@ async function main() {
 
   // ── deterministic assembly (rows + multiples) + validation ──
   const positiveTone = isPositiveTone(report, llm.conviction);
-  const { report: merged, warnings, richness } = assembleModel(report, fy26a, llm, ctx, { generated_at: new Date().toISOString(), positiveTone });
+  const { report: merged, warnings, richness } = assembleModel(report, fy26a, llm, ctx, { generated_at: new Date().toISOString(), positiveTone, lender: !!bundle.meta?.lender });
   warnings.forEach((w) => log.warn(w));
   const schema = JSON.parse(await readFile(SCHEMA_PATH, "utf8"));
   const v = validateEFG(merged, schema);

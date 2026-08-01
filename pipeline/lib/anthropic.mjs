@@ -5,7 +5,7 @@
 // Structured output is forced via a single tool with an input_schema + tool_choice. Failures are
 // classified by openai.mjs's classifyLlmError so callers branch identically across providers.
 
-import { classifyLlmError } from "./openai.mjs";
+import { classifyLlmError, PROVIDER_BUDGET_MS } from "./openai.mjs";
 
 export const DEFAULT_VERIFY_MODEL_ANTHROPIC = "claude-sonnet-5"; // strong, independent judge; override via VERIFY_MODEL
 
@@ -15,7 +15,7 @@ const PRICES = {
   "claude-haiku-4-5": [1.0, 5.0],
 };
 
-/** Backoff before each retry of a TRANSIENT failure — mirrors openai.mjs. */
+/** Backoff + per-provider wall-clock budget for retries — mirrors openai.mjs (see PROVIDER_BUDGET_MS). */
 const RETRY_DELAYS_MS = [2000, 6000, 15000];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -25,13 +25,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * system turn is lifted into the top-level `system` field. Returns { data, usage, model }. Throws a
  * classified error (`.kind`, `.retryable`, `.userMessage`) on HTTP error / missing tool_use.
  */
-export async function callAnthropicStructured({ apiKey, model, messages, schema, schemaName = "extract", temperature = 0.1, maxTokens = 4000, timeoutMs = 180000, retries = RETRY_DELAYS_MS.length, onRetry = null }) {
+export async function callAnthropicStructured({ apiKey, model, messages, schema, schemaName = "extract", temperature = 0.1, maxTokens = 4000, timeoutMs = 180000, budgetMs = PROVIDER_BUDGET_MS, retries = RETRY_DELAYS_MS.length, onRetry = null }) {
+  const startedAt = Date.now();
+  const leftMs = () => budgetMs - (Date.now() - startedAt);
   for (let attempt = 0; ; attempt++) {
+    const attemptTimeout = Math.max(1000, Math.min(timeoutMs, leftMs()));
     try {
-      return await attemptAnthropic({ apiKey, model, messages, schema, schemaName, temperature, maxTokens, timeoutMs });
+      return await attemptAnthropic({ apiKey, model, messages, schema, schemaName, temperature, maxTokens, timeoutMs: attemptTimeout });
     } catch (e) {
       if (!e.retryable || attempt >= retries) throw e;
       const wait = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
+      if (leftMs() <= wait) { e.message += ` (gave up: ${Math.round(budgetMs / 1000)}s provider budget spent)`; throw e; }
       onRetry?.({ attempt: attempt + 1, of: retries, waitMs: wait, error: e });
       await sleep(wait);
     }
