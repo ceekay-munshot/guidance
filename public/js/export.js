@@ -107,6 +107,10 @@ export function reportContent(report) {
     concallDate: m.sources && m.sources.concall_date ? S(m.sources.concall_date) : "—",
     generatedAt: m.generated_at || null,
     transcriptAvailable: m.transcript_available !== false,
+    // Lender (bank/NBFC): net_debt_cr is borrowings MINUS cash where Screener reports cash, so it is
+    // net borrowings — funding, not leverage. Every export says "Net borrowings": accurate about the
+    // netting, and free of the leverage reading that "net debt" invites for a lender.
+    lender: m.lender === true,
     inputs: {
       cmp: i.cmp, market_cap_cr: i.market_cap_cr, net_debt_cr: i.net_debt_cr,
       shares_out_cr: i.shares_out_cr, cmp_date: i.cmp_date,
@@ -259,7 +263,7 @@ export function buildPdfModel(report) {
     snapshot: [
       { label: "CMP", value: moneyStr(c.inputs.cmp) },
       { label: "Market cap", value: crStr(c.inputs.market_cap_cr) },
-      { label: "Net debt", value: crStr(c.inputs.net_debt_cr) },
+      { label: c.lender ? "Net borrowings" : "Net debt", value: crStr(c.inputs.net_debt_cr) },
       { label: "Conviction", value: dash(c.verdict.conviction), color: convictionColor(c.verdict.conviction) },
     ],
     sections,
@@ -284,7 +288,7 @@ export function buildWorkbookModel(report) {
   summary.blocks.push({
     type: "kv", pairs: [
       ["CMP (Rs)", c.inputs.cmp, "cr"], ["Market cap (Rs Cr)", c.inputs.market_cap_cr, "cr"],
-      ["Net debt (Rs Cr)", c.inputs.net_debt_cr, "cr"], ["Shares out (Cr)", c.inputs.shares_out_cr, "cr"],
+      [c.lender ? "Net borrowings (Rs Cr)" : "Net debt (Rs Cr)", c.inputs.net_debt_cr, "cr"], ["Shares out (Cr)", c.inputs.shares_out_cr, "cr"],
       ["Quarter", c.quarter + (c.quarterConfirmed ? "" : " (unconfirmed)"), "text"],
       ["Concall date", c.concallDate, "text"], ["Transcript", c.transcriptAvailable ? "Available" : "PPT-only", "text"],
     ],
@@ -404,7 +408,7 @@ export function buildCsv(report) {
   L.push(csvRow(["Snapshot"]));
   L.push(csvRow(["CMP (Rs)", isNum(c.inputs.cmp) ? c.inputs.cmp : ""]));
   L.push(csvRow(["Market cap (Rs Cr)", isNum(c.inputs.market_cap_cr) ? c.inputs.market_cap_cr : ""]));
-  L.push(csvRow(["Net debt (Rs Cr)", isNum(c.inputs.net_debt_cr) ? c.inputs.net_debt_cr : ""]));
+  L.push(csvRow([c.lender ? "Net borrowings (Rs Cr)" : "Net debt (Rs Cr)", isNum(c.inputs.net_debt_cr) ? c.inputs.net_debt_cr : ""]));
   L.push("");
   L.push(csvRow(["Key Takeaways"]));
   c.takeaways.forEach((t) => L.push(csvRow([t])));

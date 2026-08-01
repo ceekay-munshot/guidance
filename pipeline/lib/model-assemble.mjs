@@ -14,7 +14,7 @@ const clampArr = (a, lo, hi) => { const x = Array.isArray(a) ? a.slice(0, hi) : 
 // ── E/F/G model call ─────────────────────────────────────────────────────────
 
 /** Build the [system, user] messages for the model call (assumptions + prose only; script does math). */
-export function buildModelMessages(report, fy26a, ctx, { } = {}) {
+export function buildModelMessages(report, fy26a, ctx, { lender = false } = {}) {
   const m = report.meta || {};
   const g = report.concall?.guidance || [];
   const guidanceLines = g.map((x) => `- ${x.metric} (${x.horizon}) [${x.source}]: ${x.statement}${x.value ? ` — ${x.value}` : ""}`).join("\n") || "(none)";
@@ -29,6 +29,14 @@ export function buildModelMessages(report, fy26a, ctx, { } = {}) {
     `- Where no guidance exists, make a reasoned DIRECTIONAL estimate and say so (tagged "Est."). Never fabricate precision — an Est. is a directional view the user can change first.`,
     `- revenue_growth (%): FY27 and FY28 YoY. ebitda_margin / net_margin (%): FY27 and FY28. gross_margin (%): estimate ONLY if commentary supports it, else null (Screener does not report it).`,
     `- adj_ebitda: set reports_adj_ebitda=true and fill the adj margins ONLY if the company reports/emphasises Adjusted EBITDA as a KPI; otherwise false + nulls.`,
+    ...(lender ? [
+      ``,
+      `LENDER (bank / NBFC) — read the profit line correctly:`,
+      `- The FY26A figure given below as "EBITDA" is Screener's FINANCING PROFIT: revenue minus interest expense minus operating expenses. It is ALREADY NET OF INTEREST COST, so it is not EBITDA and must not be reasoned about as one.`,
+      `- The "ebitda_margin" levers therefore mean FINANCING MARGIN % (financing profit / revenue). Ground them in spread, cost of funds, credit costs and opex — not in operating leverage on a manufacturing cost base.`,
+      `- Do NOT reason about EV, net debt or EV/EBITDA: borrowings are this company's raw material, not leverage. Frame valuation on P/E, P/B and RoA.`,
+      `- reports_adj_ebitda must be false.`,
+    ] : []),
     ``,
     `DRIVERS: one line each. Revenue: volume / pricing / new capacity / demand. Margins: the expansion or contraction lever, and whether it is sustainable.`,
     ``,
@@ -38,8 +46,10 @@ export function buildModelMessages(report, fy26a, ctx, { } = {}) {
 
   const user = [
     `COMPANY: ${m.company} (${m.ticker})   QUARTER: ${m.quarter}`,
-    `FY26A (₹cr): revenue ${numOr(fy26a.revenue, "?")}, EBITDA ${numOr(fy26a.ebitda, "?")} (margin ${numOr(fy26a.ebitda_margin_pct, "?")}%), PAT ${numOr(fy26a.pat, "?")} (net margin ${numOr(fy26a.net_margin_pct, "?")}%), gross margin ${fy26a.gross_margin_pct == null ? "not reported" : fy26a.gross_margin_pct + "%"}`,
-    `Price inputs: CMP ₹${m.inputs?.cmp}, shares ${m.inputs?.shares_out_cr}cr, net debt ₹${m.inputs?.net_debt_cr}cr`,
+    `FY26A (₹cr): revenue ${numOr(fy26a.revenue, "?")}, ${lender ? "financing profit" : "EBITDA"} ${numOr(fy26a.ebitda, "?")} (margin ${numOr(fy26a.ebitda_margin_pct, "?")}%), PAT ${numOr(fy26a.pat, "?")} (net margin ${numOr(fy26a.net_margin_pct, "?")}%), gross margin ${fy26a.gross_margin_pct == null ? "not reported" : fy26a.gross_margin_pct + "%"}`,
+    lender
+      ? `Price inputs: CMP ₹${m.inputs?.cmp}, shares ${m.inputs?.shares_out_cr}cr (net borrowings ₹${m.inputs?.net_debt_cr}cr — funding, not leverage; ignore for valuation)`
+      : `Price inputs: CMP ₹${m.inputs?.cmp}, shares ${m.inputs?.shares_out_cr}cr, net debt ₹${m.inputs?.net_debt_cr}cr`,
     ctx ? `Valuation context (Screener): current P/E ${numOr(ctx.current_pe, "n/a")}, 5-yr median P/E ${numOr(ctx.hist_median_pe, "n/a")}, peer median P/E ${numOr(ctx.peer_median_pe, "n/a")}` : `Valuation context: unavailable`,
     ``,
     `C.1 GUIDANCE (use these numbers where present):`,
@@ -61,7 +71,10 @@ export function buildModelMessages(report, fy26a, ctx, { } = {}) {
  * builds the valuation multiples + a real "vs history/peers" sanity-check, and derives monitorables
  * from C.1 guidance. Returns { report, warnings, richness, valuationInternal }.
  */
-export function assembleModel(report, fy26a, llm, ctx, { generated_at, positiveTone } = {}) {
+/** Finite number or null — used to test whether a real FY26A actual exists. */
+const numOrNull = (v) => (typeof v === "number" && isFinite(v) ? v : null);
+
+export function assembleModel(report, fy26a, llm, ctx, { generated_at, positiveTone, lender = false } = {}) {
   const out = { ...(report || {}) };
   const warnings = [];
 
@@ -85,10 +98,12 @@ export function assembleModel(report, fy26a, llm, ctx, { generated_at, positiveT
   const rows = [
     row("revenue", "Revenue", "rs_cr", absVals(f.revenue), llm.driver_revenue),
     row("gross_margin_pct", "Gross margin %", "pct", pctVals(f.gross_margin_pct), llm.driver_gross_margin),
-    row("ebitda", "EBITDA", "rs_cr", absVals(f.ebitda), llm.driver_ebitda),
-    row("ebitda_margin_pct", "EBITDA margin %", "pct", pctVals(f.ebitda_margin_pct), llm.driver_ebitda_margin),
+    // Display labels only — `key` is the stable id every consumer reads (report.schema.json is explicit
+    // that downstream code never string-matches the label), so naming a lender's line honestly is safe.
+    row("ebitda", lender ? "Financing profit" : "EBITDA", "rs_cr", absVals(f.ebitda), llm.driver_ebitda),
+    row("ebitda_margin_pct", lender ? "Financing margin %" : "EBITDA margin %", "pct", pctVals(f.ebitda_margin_pct), llm.driver_ebitda_margin),
   ];
-  if (llm.reports_adj_ebitda) {
+  if (llm.reports_adj_ebitda && !lender) {
     rows.push(row("adj_ebitda_margin_pct", "Adjusted EBITDA margin %", "pct",
       pctVals({ fy26a: llm.adj_ebitda_margin_fy26, fy27e: llm.adj_ebitda_margin_fy27, fy28e: llm.adj_ebitda_margin_fy28 }), llm.driver_adj_ebitda));
   }
@@ -108,8 +123,21 @@ export function assembleModel(report, fy26a, llm, ctx, { generated_at, positiveT
   // F — valuation from the SAME stored levers (exact reconciliation with the frontend on load).
   const v = computeValuation(out.meta?.inputs || {}, f);
   const richness = assessValuationRichness(v.pe.fy27e, ctx || {});
-  const sanity = buildSanityCheck({ valuation: v, inputs: out.meta?.inputs || {}, currentPe: ctx ? numOr(ctx.current_pe) : null, richness, positiveTone: !!positiveTone });
-  out.valuation = { pe: v.pe, ev_ebitda: v.ev_ebitda, price_sales: v.price_sales, sanity_check: sanity };
+  const sanity = buildSanityCheck({ valuation: v, inputs: out.meta?.inputs || {}, currentPe: ctx ? numOr(ctx.current_pe) : null, richness, positiveTone: !!positiveTone, lender: !!lender });
+  // EV-based multiples are suppressed outright — stored as null, rendered "n.m." — when they cannot
+  // mean what they claim to:
+  //   • a LENDER, where borrowings are funding not leverage and "EBITDA" is Screener's Financing
+  //     Profit, so EV and EV/EBITDA are category errors rather than merely imprecise; and
+  //   • no FY26A EBITDA anchor at all, where the forward multiple would rest entirely on an LLM's
+  //     margin guess with no actual to anchor it — a parse regression would otherwise publish a
+  //     confident-looking multiple built on nothing.
+  // Publishing "n.m." is the same treatment the schema and UI already give a non-positive denominator.
+  const evMeaningless = !!lender || !numOrNull(fy26a.ebitda);
+  const evEbitda = evMeaningless ? { fy27e: null, fy28e: null } : v.ev_ebitda;
+  if (evMeaningless) warnings.push(lender
+    ? "lender (bank/NBFC): EV/EBITDA and net-debt multiples suppressed as n.m. — judge on P/E, P/B, RoA"
+    : "no FY26A EBITDA actual — EV/EBITDA suppressed as n.m. rather than published off an unanchored margin assumption");
+  out.valuation = { pe: v.pe, ev_ebitda: evEbitda, price_sales: v.price_sales, sanity_check: sanity };
   if (v.pe.fy27e == null || v.ev_ebitda.fy27e == null) warnings.push("a FY27E multiple is n.m. (denominator ≤ 0) — the company may be loss-making; stored as null and rendered 'n.m.' (schema-valid)");
 
   // G — next steps.

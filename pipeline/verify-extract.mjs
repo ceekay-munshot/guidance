@@ -19,27 +19,78 @@ import { callStructured, estimateCost } from "./lib/openai.mjs";
 import { callAnthropicStructured, estimateAnthropicCost, DEFAULT_VERIFY_MODEL_ANTHROPIC } from "./lib/anthropic.mjs";
 import { VERIFY_JSON_SCHEMA } from "./lib/research-schema.mjs";
 import { buildClaims, buildVerifyMessages, applyVerification } from "./lib/verify.mjs";
+import { isProviderHealthy, noteProviderFailure } from "./lib/llm.mjs";
 import { findOutDir } from "./lib/out.mjs";
 import { log } from "./lib/util.mjs";
 
 const OUT_ROOT = fileURLToPath(new URL("./out/", import.meta.url));
 const DEFAULT_VERIFY_MODEL = "gpt-4o"; // OpenAI, deliberately a DIFFERENT model than extraction's gpt-4.1
 
-/** Pick the verifier provider: Anthropic if its key is set (true cross-provider), else OpenAI. */
-function chooseVerifier() {
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+/**
+ * Canonical model id: lower-cased, with only a DATED release suffix removed (`-2025-04-14`,
+ * `-20251001`). A loose prefix test would read `gpt-4.1-mini` as the same model as `gpt-4.1` —
+ * they're separate models, and treating them as one made the verifier decline a perfectly good
+ * independent candidate and skip the audit.
+ */
+const canonicalModel = (m) => String(m || "").trim().toLowerCase().replace(/-\d{4}-\d{2}-\d{2}$/, "").replace(/-\d{8}$/, "");
+
+/** Two ids name the same model once dated suffixes are normalised away. */
+const sameModel = (a, b) => !!a && !!b && canonicalModel(a) === canonicalModel(b);
+
+/**
+ * Every verifier that is independent of the extractor, best first:
+ *   1. a different PROVIDER than the extractor  (true cross-provider check)
+ *   2. the same provider but a genuinely different MODEL
+ * The caller tries them in order, so a preferred-but-unreachable verifier (expired Anthropic key,
+ * exhausted quota, outage) falls through to the next INDEPENDENT option instead of silently
+ * removing verification altogether. An empty list means nothing independent exists — then, and only
+ * then, the audit is skipped.
+ *
+ * Independence matters more now that lib/llm.mjs can fail extraction over to Anthropic: without
+ * this, extractor and verifier would both default to claude-sonnet-5 in exactly that outage, leaving
+ * one model marking its own homework.
+ */
+export function verifierCandidates(extractedBy = {}, healthy = isProviderHealthy) {
+  // A provider already proven dead this run is not a candidate. The audit is OPTIONAL, so re-probing
+  // a known-dead provider would spend another full 90s budget on something we're willing to skip —
+  // undoing the cross-step bound the health marker exists to provide.
+  const anthropicKey = healthy("anthropic") ? process.env.ANTHROPIC_API_KEY : null;
+  const openaiKey = healthy("openai") ? process.env.OPENAI_API_KEY : null;
+  const by = extractedBy.provider || "openai"; // older reports predate _step7.provider
+  const byModel = extractedBy.model || "";
+
+  // VERIFY_MODEL is a SINGLE setting but there are now two possible verifier providers, so it must
+  // only apply to the one it actually names — inferred from the id. Handing an Anthropic model id to
+  // OpenAI (or vice versa) earns a 400, which would take down a run whose report was already
+  // complete. A setting that was correct under the old Anthropic-first behaviour must not become a
+  // landmine the first time extraction fails over.
   const override = process.env.VERIFY_MODEL;
-  if (anthropicKey) return { provider: "anthropic", key: anthropicKey, model: override || DEFAULT_VERIFY_MODEL_ANTHROPIC };
-  return { provider: "openai", key: process.env.OPENAI_API_KEY, model: override || DEFAULT_VERIFY_MODEL };
+  const isAnthropicModel = (m) => /^claude/i.test(String(m || ""));
+  const modelFor = (provider) => {
+    const belongs = override && (provider === "anthropic" ? isAnthropicModel(override) : !isAnthropicModel(override));
+    if (belongs) return override;
+    return provider === "anthropic" ? DEFAULT_VERIFY_MODEL_ANTHROPIC : DEFAULT_VERIFY_MODEL;
+  };
+
+  const out = [];
+  if (by !== "anthropic" && anthropicKey) out.push({ provider: "anthropic", key: anthropicKey, model: modelFor("anthropic"), independence: "cross-provider" });
+  if (by !== "openai" && openaiKey) out.push({ provider: "openai", key: openaiKey, model: modelFor("openai"), independence: "cross-provider" });
+
+  const sameKey = by === "anthropic" ? anthropicKey : openaiKey;
+  const sameDefault = modelFor(by);
+  if (sameKey && !sameModel(sameDefault, byModel)) out.push({ provider: by, key: sameKey, model: sameDefault, independence: "same provider, different model" });
+  return out;
 }
+
+/** Backwards-compatible single-best pick (null when nothing independent is available). */
+export function chooseVerifier(extractedBy = {}) {
+  return verifierCandidates(extractedBy)[0] || null;
+}
+
 
 async function main() {
   const arg = (process.argv[2] || process.env.COMPANY || "").trim();
-  const V = chooseVerifier();
-  log.step(`Munshot verify-extract — provider ${V.provider}, model ${V.model}`);
-  if (!process.env.OPENAI_API_KEY && V.provider === "openai") { log.err("OPENAI_API_KEY missing — cannot verify"); process.exitCode = 1; return; }
-  if (!V.key) { log.err(`${V.provider} key missing — cannot verify`); process.exitCode = 1; return; }
-  if (V.provider === "openai") log.info("no ANTHROPIC_API_KEY set — using a second OpenAI model. Set ANTHROPIC_API_KEY for a stronger, independent cross-provider check.");
+  log.step("Munshot verify-extract");
 
   const found = await findOutDir(OUT_ROOT, arg);
   if (!found) { log.err(`no bundle found in pipeline/out/${arg ? ` for "${arg}"` : ""} — run fetch-company first`); process.exitCode = 1; return; }
@@ -52,25 +103,67 @@ async function main() {
   const transcriptAvailable = !!report.meta?.transcript_available && transcript.trim().length > 500;
   log.ok(`report: ${report.meta?.company} (${report.meta?.ticker}) · transcript ${transcript.length} chars`);
 
+  // Verifiers are chosen AGAINST the extractor recorded in _step7, so none of them is the same model.
+  const extractedBy = report._step7 || {};
+  const by = `${extractedBy.provider || "openai"}/${extractedBy.model || "?"}`;
+  const candidates = verifierCandidates(extractedBy);
+  const writeSkipped = async (why, V) => {
+    const audit = { slug, company: report.meta?.company || null, quarter: report.meta?.quarter || null, provider: V?.provider || null, model: V?.model || null, transcript_available: transcriptAvailable, checked: 0, skipped: why, verdicts: [], dropped: [] };
+    await writeFile(join(dir, "verification.json"), JSON.stringify(audit, null, 2));
+  };
+  if (!candidates.length) {
+    const why = `no independent verifier available (extraction ran on ${by}; the alternatives are unconfigured or already marked unhealthy this run)`;
+    log.warn(`${why} — SKIPPING the audit rather than letting a model mark its own homework`);
+    log.info("set ANTHROPIC_API_KEY (or VERIFY_MODEL) so the audit runs on a different model family");
+    await writeSkipped(why, null);
+    return;
+  }
+  log.info(`extraction by ${by} → verifier candidates: ${candidates.map((c) => `${c.provider}/${c.model}`).join(", ")}`);
+
   const claims = buildClaims(report, { transcriptAvailable });
   if (!transcriptAvailable || !claims.length) {
     // Nothing transcript-sourced to audit — write a "skipped" sidecar and exit clean (not a failure).
-    const audit = { slug, company: report.meta?.company || null, quarter: report.meta?.quarter || null, provider: V.provider, model: V.model, transcript_available: transcriptAvailable, checked: 0, skipped: transcriptAvailable ? "no transcript-sourced claims" : "no transcript", verdicts: [], dropped: [] };
-    await writeFile(join(dir, "verification.json"), JSON.stringify(audit, null, 2));
-    log.warn(`verification skipped (${audit.skipped}) — wrote verification.json with 0 verdicts`);
+    // No verifier has been called yet, so record the one we WOULD have used.
+    const why = transcriptAvailable ? "no transcript-sourced claims" : "no transcript";
+    await writeSkipped(why, candidates[0]);
+    log.warn(`verification skipped (${why}) — wrote verification.json with 0 verdicts`);
     return;
   }
   log.info(`auditing ${claims.length} transcript-sourced claims (${claims.filter((c) => c.category === "guidance").length} guidance, ${claims.filter((c) => c.category === "expansion_flag").length} flags, ${claims.filter((c) => c.category === "about").length} about)`);
 
-  // ── call the verifier ──
+  // ── call the verifier, trying each INDEPENDENT candidate in turn ──
   const messages = buildVerifyMessages(report, transcript, claims);
-  let out, usage, model;
-  try {
-    log.step(`Calling ${V.provider} (structured outputs) to audit claims…`);
-    if (V.provider === "anthropic") ({ data: out, usage, model } = await callAnthropicStructured({ apiKey: V.key, model: V.model, messages, schema: VERIFY_JSON_SCHEMA, schemaName: "verify" }));
-    else ({ data: out, usage, model } = await callStructured({ apiKey: V.key, model: V.model, messages, schema: VERIFY_JSON_SCHEMA, schemaName: "verify" }));
-  } catch (e) {
-    log.err(`${V.provider} call failed: ${e.message}`); process.exitCode = 1; return;
+  let out, usage, model, V = null, lastErr = null;
+  for (const cand of candidates) {
+    try {
+      log.step(`Calling ${cand.provider}/${cand.model} (${cand.independence}) to audit claims…`);
+      if (cand.provider === "anthropic") ({ data: out, usage, model } = await callAnthropicStructured({ apiKey: cand.key, model: cand.model, messages, schema: VERIFY_JSON_SCHEMA, schemaName: "verify" }));
+      else ({ data: out, usage, model } = await callStructured({ apiKey: cand.key, model: cand.model, messages, schema: VERIFY_JSON_SCHEMA, schemaName: "verify" }));
+      V = cand;
+      break;
+    } catch (e) {
+      lastErr = e;
+      // Try the NEXT candidate on any failure, including bad_request. Each candidate sends a
+      // different model id, so a 400 is far more likely a wrong-model setting than a broken schema —
+      // and the next candidate may well be fine. A genuinely malformed request simply fails on all of
+      // them and lands in the skip below, logged loudly, rather than taking the run with it.
+      // The audit calls providers directly, so it owes the rest of the run what it learns: a durable
+      // failure here must reach the shared health marker, or Model and Finalize will each re-pay a
+      // full budget rediscovering the same dead provider.
+      if (noteProviderFailure(cand.provider, e)) log.warn(`${cand.provider} marked unhealthy for the rest of this run (${e.kind})`);
+      const bug = !["quota", "auth", "rate_limit", "server", "network"].includes(e.kind);
+      if (bug) log.err(`${cand.provider}/${cand.model} rejected the request (${e.kind}): ${e.message.slice(0, 200)}`);
+      else log.warn(`${cand.provider}/${cand.model} unavailable (${e.kind}: ${e.message.slice(0, 140)})`);
+    }
+  }
+  if (!V) {
+    // Every independent verifier failed. This pass is an INTERNAL quality tool that adds nothing
+    // visible to the report, so skipping it beats discarding a complete, already-validated analysis.
+    // The reason is logged AND recorded in verification.json, so a real bug is still loud.
+    const why = `every independent verifier failed (last: ${lastErr?.kind || "error"} — ${String(lastErr?.message || "").slice(0, 160)})`;
+    log.err(`${why} — SKIPPING the audit rather than failing an otherwise complete run`);
+    await writeSkipped(why, null);
+    return;
   }
   const cost = V.provider === "anthropic" ? estimateAnthropicCost(usage, model) : estimateCost(usage, model);
   log.ok(`${out.verdicts?.length || 0} verdicts returned`);

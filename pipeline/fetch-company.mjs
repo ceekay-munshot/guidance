@@ -23,6 +23,7 @@ import { fetchDoc, UA, shouldDegradeToPpt } from "./lib/fetchers.mjs";
 import { extractPdfText } from "./lib/pdf.mjs";
 import { selfCheck } from "./lib/selfcheck.mjs";
 import { kvPut, kvConfigured } from "./lib/kv.mjs";
+import { clearProviderHealth } from "./lib/llm.mjs";
 import { log, slugify, round, quarterFromDate, quarterFromTitle, expectedQuarter } from "./lib/util.mjs";
 
 /** Best-effort progress ping to KV (Step 11 loading screen). No-op without SLUG/creds; never throws. */
@@ -44,6 +45,11 @@ async function main() {
     firecrawlKey: process.env.FIRECRAWL_API_KEY,
     scrapedoKey: process.env.SCRAPEDO_API_KEY,
   };
+
+  // A run BEGINS here, so forget which providers were dead last time. In CI the checkout is fresh
+  // anyway; locally pipeline/out/ persists between analyses and a stale mark would otherwise keep
+  // routing around a provider whose key has since been fixed.
+  clearProviderHealth();
 
   log.step(`Munshot fetch-company — "${query}"  (${fetched_at})`);
   for (const [k, v] of Object.entries({ SCREENER_EMAIL: env.email, SCREENER_PASSWORD: env.password, FIRECRAWL_API_KEY: env.firecrawlKey, SCRAPEDO_API_KEY: env.scrapedoKey })) {
@@ -118,6 +124,7 @@ async function main() {
     const inp = parsed.inputs;
     log.info(`CMP ₹${inp.cmp ?? "—"} · mktcap ₹${inp.market_cap_cr ?? "—"}cr · shares ${round(inp.shares_out_cr, 2) ?? "—"}cr · net debt ₹${round(inp.net_debt_cr, 0) ?? "—"}cr`);
     log.info(`FY26A: revenue ₹${parsed.fy26a.revenue ?? "—"}cr · EBITDA ₹${parsed.fy26a.ebitda ?? "—"}cr · PAT ₹${parsed.fy26a.pat ?? "—"}cr`);
+    if (parsed.lender) log.info("lender layout (bank/NBFC): EBITDA = Screener 'Financing Profit'; EV/EBITDA is not meaningful here");
 
     // ── quarter identification (never silently substitute an older quarter / annual report) ──
     const latest = parsed.concalls.entries[0] || null;
@@ -181,6 +188,14 @@ async function main() {
     // ── 6. Assemble the bundle with provenance ──
     const src = resolved.screener_url;
     const prov = (source, note) => ({ source, fetched_at, ...(note ? { note } : {}) });
+    // Screener's own row label for a field, Title Cased for the note; falls back to the conventional
+    // name when the row wasn't found (the value is null in that case anyway).
+    const ACRONYMS = new Set(["opm", "pat", "ebitda", "cwip", "eps", "npm"]);
+    const rowName = (key, fallback) => {
+      const l = parsed.row_labels?.[key];
+      if (!l) return fallback;
+      return l.split(" ").map((w) => (ACRONYMS.has(w) ? w.toUpperCase() : w.replace(/^[a-z]/, (c) => c.toUpperCase()))).join(" ");
+    };
     bundle = {
       ok: false, // set by the self-check below
       query,
@@ -196,6 +211,10 @@ async function main() {
         quarter_confirmed,
         expected_quarter: expQ,
         transcript_available: effectiveTranscriptAvailable,
+        // Screener renders a lender (bank/NBFC) P&L differently — see lib/screener-labels.mjs. Kept
+        // on the bundle so later steps know EBITDA here is "Financing Profit" and that EV/EBITDA and
+        // net-debt multiples aren't meaningful for this company.
+        lender: !!parsed.lender,
       },
       // → report.schema.json meta.inputs
       inputs: {
@@ -226,11 +245,14 @@ async function main() {
         cmp: prov(src, "Screener top-ratio 'Current Price'; cmp_date = fetch date (live price)"),
         shares_out_cr: prov(src, "derived: market_cap_cr / cmp"),
         market_cap_cr: prov(src, "Screener top-ratio 'Market Cap'"),
-        net_debt_cr: prov(src, inp.net_debt_note || "Screener balance sheet: borrowings − cash"),
-        revenue: prov(src, "Screener P&L, Mar-2026 column (Sales)"),
-        ebitda: prov(src, "Screener P&L, Mar-2026 column (Operating Profit)"),
-        ebitda_margin_pct: prov(src, "Screener P&L (OPM %)"),
-        pat: prov(src, "Screener P&L (Net Profit)"),
+        net_debt_cr: prov(src, inp.net_debt_note || `Screener balance sheet: ${rowName("borrowings", "borrowings")} − cash`),
+        // Name the row ACTUALLY matched — a lender's numbers come from "Financing Profit" /
+        // "Financing Margin %", and citing the manufacturer rows would make the retained bundle
+        // misleading to anyone auditing where a figure came from.
+        revenue: prov(src, `Screener P&L, Mar-2026 column (${rowName("revenue", "Sales")})`),
+        ebitda: prov(src, `Screener P&L, Mar-2026 column (${rowName("ebitda", "Operating Profit")})${parsed.lender ? " — a lender's operating line; not EBITDA in the usual sense" : ""}`),
+        ebitda_margin_pct: prov(src, `Screener P&L (${rowName("ebitda_margin_pct", "OPM %")})`),
+        pat: prov(src, `Screener P&L (${rowName("pat", "Net Profit")})`),
         net_margin_pct: prov(src, "derived: PAT / revenue"),
         gross_margin_pct: prov(src, "not reported by Screener — left null"),
         transcript_url: prov(src, "Screener Documents → Concalls (latest)"),

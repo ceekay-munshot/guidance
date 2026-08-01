@@ -20,6 +20,29 @@ import { log } from "./lib/util.mjs";
 
 const OUT_ROOT = fileURLToPath(new URL("./out/", import.meta.url));
 
+/**
+ * The specific reason a pipeline step left behind, if any.
+ *
+ * The dispatched SLUG and the output directory are NOT always the same name. The Worker derives the
+ * slug from the ticker when it has one, else from the company name (`deepak-nitrite`), while
+ * fetch-company names its directory after the ticker Screener resolved (`deepakntr`). Reading only
+ * `out/<slug>/error.txt` therefore missed the reason on exactly the free-text searches this whole
+ * change exists to explain — so fall back to scanning the bundle directories. A run only ever has
+ * one company's output, so the scan is unambiguous.
+ */
+async function findErrorReason(slug) {
+  const direct = await readFile(join(OUT_ROOT, slug, "error.txt"), "utf8").catch(() => "");
+  if (direct.trim()) return direct.trim();
+  let entries = [];
+  try { entries = await readdir(OUT_ROOT, { withFileTypes: true }); } catch { return ""; }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const text = await readFile(join(OUT_ROOT, e.name, "error.txt"), "utf8").catch(() => "");
+    if (text.trim()) return text.trim();
+  }
+  return "";
+}
+
 async function findReportJson() {
   let entries = [];
   try { entries = await readdir(OUT_ROOT, { withFileTypes: true }); } catch { return null; }
@@ -67,10 +90,11 @@ async function main() {
       await kvPut(`status:${slug}`, JSON.stringify({ state: "running", stage, updated_at: new Date().toISOString() }));
       log.ok(`KV status:${slug} = running (${stage})`);
     } else if (cmd === "error") {
-      // Prefer a specific reason a pipeline step left behind (pipeline/out/<slug>/error.txt) over the
-      // generic workflow message, so the client sees WHY it failed, not a misleading catch-all.
+      // Prefer a specific reason a pipeline step left behind (error.txt) over the generic workflow
+      // message, so the client sees WHY it failed, not a misleading catch-all.
       let message = arg4 || arg3 || "Analysis failed.";
-      try { const specific = (await readFile(join(OUT_ROOT, slug, "error.txt"), "utf8")).trim(); if (specific) message = specific; } catch { /* no specific reason */ }
+      const specific = await findErrorReason(slug);
+      if (specific) message = specific;
       await kvPut(`status:${slug}`, JSON.stringify({ state: "error", updated_at: new Date().toISOString(), message }));
       log.ok(`KV status:${slug} = error`);
     } else if (cmd === "report") {

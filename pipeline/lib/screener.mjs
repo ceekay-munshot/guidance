@@ -4,6 +4,7 @@
 
 import * as cheerio from "cheerio";
 import { parseNum, parseLooseDate } from "./util.mjs";
+import { PNL_LABELS, BS_LABELS, hasLabel, isLenderLayout, LENDER_NOTE, DEPOSITS_NOTE } from "./screener-labels.mjs";
 
 const BASE = "https://www.screener.in";
 
@@ -52,13 +53,19 @@ function columnIndexFor(headers, re) {
   return -1;
 }
 
+/** Value + the row label it came from. Screener's label differs by layout (Operating Profit vs
+ *  Financing Profit), and the bundle's provenance has to name the row actually read, not a guess. */
+function rowHit(table, labels, col) {
+  if (!table || col < 0) return { value: null, label: null };
+  for (const [label, cells] of table.rows) {
+    if (labels.some((l) => label.includes(l))) return { value: parseNum(cells[col]), label };
+  }
+  return { value: null, label: null };
+}
+
 /** Value of the first row whose normalised label includes any of `labels`, at column `col`. */
 function rowVal(table, labels, col) {
-  if (!table || col < 0) return null;
-  for (const [label, cells] of table.rows) {
-    if (labels.some((l) => label.includes(l))) return parseNum(cells[col]);
-  }
-  return null;
+  return rowHit(table, labels, col).value;
 }
 
 // ── page parse ───────────────────────────────────────────────────────────────
@@ -86,23 +93,30 @@ export function parseCompanyPage(html) {
   if (!cmp) notes.push("current price not found in top-ratios");
   if (!market_cap_cr) notes.push("market cap not found in top-ratios");
 
-  // P&L — FY26 = the "Mar 2026" column.
+  // P&L — FY26 = the "Mar 2026" column. Label needles live in screener-labels.mjs and cover BOTH
+  // Screener skeletons: "Operating Profit"/"OPM %" for a normal company and "Financing
+  // Profit"/"Financing Margin %" for a lender (bank/NBFC). See that file for why this matters.
   const pnl = readTable($, "profit-loss");
   const pcol = pnl ? columnIndexFor(pnl.headers, /mar\s*2026/i) : -1;
   if (pnl && pcol < 0) notes.push("no 'Mar 2026' column in P&L — FY26 actuals may be unreported");
-  const revenue = rowVal(pnl, ["sales", "revenue"], pcol);
-  const ebitda = rowVal(pnl, ["operating profit"], pcol);
-  const ebitda_margin_pct = rowVal(pnl, ["opm"], pcol);
-  const pat = rowVal(pnl, ["net profit"], pcol);
+  const lender = isLenderLayout(pnl ? pnl.rows.keys() : []);
+  const revenueHit = rowHit(pnl, PNL_LABELS.revenue, pcol);
+  const ebitdaHit = rowHit(pnl, PNL_LABELS.ebitda, pcol);
+  const marginHit = rowHit(pnl, PNL_LABELS.ebitda_margin_pct, pcol);
+  const patHit = rowHit(pnl, PNL_LABELS.pat, pcol);
+  const revenue = revenueHit.value, ebitda = ebitdaHit.value, ebitda_margin_pct = marginHit.value, pat = patHit.value;
   const net_margin_pct = pat != null && revenue ? (pat / revenue) * 100 : null;
   // Screener P&L has no gross margin line — leave null, never fabricate.
   const gross_margin_pct = null;
+  if (lender) notes.push(LENDER_NOTE);
 
   // Balance sheet — net debt = borrowings − cash (cash rarely on the condensed BS).
   const bs = readTable($, "balance-sheet");
   const bcol = bs ? columnIndexFor(bs.headers, /mar\s*2026/i) : -1;
-  const borrowings = rowVal(bs, ["borrowings"], bcol);
-  const cash = rowVal(bs, ["cash equivalents", "cash and bank", "cash & bank", "cash"], bcol);
+  const borrowingsHit = rowHit(bs, BS_LABELS.borrowings, bcol);
+  const cashHit = rowHit(bs, BS_LABELS.cash, bcol);
+  const borrowings = borrowingsHit.value, cash = cashHit.value;
+  if (bs && hasLabel(bs.rows.keys(), BS_LABELS.deposits)) notes.push(DEPOSITS_NOTE);
   let net_debt_cr = null;
   let net_debt_note = null;
   if (borrowings != null && cash != null) net_debt_cr = borrowings - cash;
@@ -116,8 +130,15 @@ export function parseCompanyPage(html) {
   // Valuation context for Step 9's F (current P/E + history/peer medians). Best-effort, never fatal.
   const valuation_context = parseValuationContext($, ratios);
 
+  // Which Screener row each number actually came from — the bundle's provenance quotes these, so an
+  // audit of a lender's bundle reads "Financing Profit", not the manufacturer row we never touched.
+  const row_labels = {
+    revenue: revenueHit.label, ebitda: ebitdaHit.label, ebitda_margin_pct: marginHit.label,
+    pat: patHit.label, borrowings: borrowingsHit.label, cash: cashHit.label,
+  };
+
   return {
-    name, sector, sub_sector,
+    name, sector, sub_sector, lender, row_labels,
     inputs: { cmp, cmp_date: null, shares_out_cr, market_cap_cr, net_debt_cr, net_debt_note, borrowings, cash },
     fy26a: { revenue, ebitda, ebitda_margin_pct, pat, net_margin_pct, gross_margin_pct },
     concalls,

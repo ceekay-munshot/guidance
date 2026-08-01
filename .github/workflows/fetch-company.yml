@@ -10,13 +10,15 @@
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   SCREENER_EMAIL, SCREENER_PASSWORD, FIRECRAWL_API_KEY, SCRAPEDO_API_KEY  (Step 6)
-#   OPENAI_API_KEY                                                    (Steps 7, 8)
+#   OPENAI_API_KEY                                                    (Steps 7, 8, 9)
 #   CF_ACCOUNT_ID, CF_KV_NAMESPACE_ID, CF_API_TOKEN                   (Step 10 — KV writes)
-# Optional repo secret (a stronger, INDEPENDENT cross-provider verification):
-#   ANTHROPIC_API_KEY  — when set, Step 8b's audit runs on a different model family
+# Optional repo secret (a second provider — stronger verification AND a failover):
+#   ANTHROPIC_API_KEY  — when set, Step 8b's audit runs on a different model family, AND every LLM
+#                        step fails over to it when OpenAI is out of credit or unreachable
 # Optional repo variables (Settings → Variables → Actions):
 #   OPENAI_MODEL  — overrides the extraction/research model (pipeline/lib/openai.mjs)
 #   VERIFY_MODEL  — overrides the verification model (defaults to a different model)
+#   ANTHROPIC_MODEL — overrides the fallback model (pipeline/lib/llm.mjs)
 # ---------------------------------------------------------------------------
 
 name: fetch-company
@@ -105,6 +107,7 @@ jobs:
           node pipeline/test/research.test.mjs
           node pipeline/test/model.test.mjs
           node pipeline/test/salvage.test.mjs
+          node pipeline/test/failure-modes.test.mjs
           node worker/test/worker.test.mjs
           node worker/test/analyze.test.mjs
           node worker/test/export.test.mjs
@@ -135,6 +138,10 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          # Actions secrets are NOT auto-exposed to a step — without these two lines lib/llm.mjs
+          # can't see the fallback provider and an OpenAI outage still kills the run.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
         run: |
           node pipeline/kv-put.mjs progress "$SLUG" extract
           node pipeline/extract-concall.mjs "$COMPANY"
@@ -146,6 +153,10 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          # Actions secrets are NOT auto-exposed to a step — without these two lines lib/llm.mjs
+          # can't see the fallback provider and an OpenAI outage still kills the run.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
         run: |
           node pipeline/kv-put.mjs progress "$SLUG" research
@@ -171,6 +182,10 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          # Actions secrets are NOT auto-exposed to a step — without these two lines lib/llm.mjs
+          # can't see the fallback provider and an OpenAI outage still kills the run.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
         run: |
           node pipeline/kv-put.mjs progress "$SLUG" model
           node pipeline/model-report.mjs "$COMPANY"
@@ -182,6 +197,10 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          # Actions secrets are NOT auto-exposed to a step — without these two lines lib/llm.mjs
+          # can't see the fallback provider and an OpenAI outage still kills the run.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
         run: |
           node pipeline/kv-put.mjs progress "$SLUG" finalize
           node pipeline/finalize-report.mjs "$COMPANY"
@@ -192,9 +211,13 @@ jobs:
         run: node pipeline/kv-put.mjs report "$SLUG"
 
       # Step 10/11: on ANY failure above, mark the job errored so the client stops polling and shows why.
+      # This string is only the LAST-RESORT fallback: every step that can fail for a knowable reason
+      # writes pipeline/out/<slug>/error.txt, which kv-put prefers. It deliberately no longer blames
+      # the source documents — that catch-all once told users a transcript was unavailable when the
+      # transcript had downloaded fine and the analysis provider was out of credit.
       - name: KV — mark error
         if: ${{ inputs.slug != '' && failure() }}
-        run: node pipeline/kv-put.mjs error "$SLUG" "We couldn't finish this analysis — a source (financials, transcript or deck) may have been temporarily unavailable. Please try again shortly."
+        run: node pipeline/kv-put.mjs error "$SLUG" "We couldn't finish this analysis. Please try again shortly."
 
       - name: Upload bundle artifact
         if: always()

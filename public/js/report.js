@@ -138,7 +138,7 @@ function headerStrip(report) {
     <div class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm">
       ${stat("CMP", rupees(i.cmp))}
       ${stat("Mkt cap", rupeesCr(i.market_cap_cr))}
-      ${stat("Net debt", rupeesCr(i.net_debt_cr))}
+      ${stat(m.lender ? "Net borrowings" : "Net debt", rupeesCr(i.net_debt_cr))}
     </div>
   </section>`;
 }
@@ -552,6 +552,23 @@ export function seedEdits(report) {
  * PURE deterministic recompute. Returns the forecast rows + valuation for the given edits.
  * Keys off row `key` (never labels). Guardrails: a multiple with denominator ≤ 0 → null (→ "n.m.").
  */
+/**
+ * Do EV-based multiples mean anything for this company? Mirrors pipeline/lib/model-assemble.mjs
+ * exactly. False for a LENDER (borrowings are funding, not leverage, and "EBITDA" is Screener's
+ * Financing Profit) and when there is no FY26A EBITDA actual to anchor the forecast. In both cases
+ * EV/EBITDA renders "n.m." — and it must stay "n.m." after a lever edit too, otherwise recomputing
+ * would quietly resurrect the number the report just called meaningless.
+ */
+function evMultiplesApply(report) {
+  if (report?.meta?.lender) return false;
+  const eb = rowByKey(report, "ebitda");
+  // Must match pipeline/lib/model-assemble.mjs's `!numOrNull(fy26a.ebitda)` EXACTLY, zero included.
+  // A FY26A EBITDA of 0 — often a tiny value rounded to zero by fetch-company — is not an anchor,
+  // and treating it as one here while the pipeline treated it as missing meant the stored report
+  // showed "n.m." and the first lever edit quietly replaced it with a number.
+  return typeof eb?.fy26a === "number" && isFinite(eb.fy26a) && eb.fy26a !== 0;
+}
+
 export function computeModel(report, edits) {
   const e = edits || {};
   const inputs = report.meta?.inputs ?? {};
@@ -580,6 +597,7 @@ export function computeModel(report, edits) {
 
   const marketCap = cmp * shares;
   const ev = marketCap + netDebt;
+  const evApply = evMultiplesApply(report);
   const ratio = (n, d) => (typeof d === "number" && d > 0 ? n / d : null); // ≤0 denominator → n.m.
 
   return {
@@ -591,7 +609,7 @@ export function computeModel(report, edits) {
     valuation: {
       cmp, marketCap, ev,
       pe: { fy27e: ratio(marketCap, pat27), fy28e: ratio(marketCap, pat28) },
-      ev_ebitda: { fy27e: ratio(ev, eb27), fy28e: ratio(ev, eb28) },
+      ev_ebitda: evApply ? { fy27e: ratio(ev, eb27), fy28e: ratio(ev, eb28) } : { fy27e: null, fy28e: null },
       price_sales: { fy27e: ratio(marketCap, rev27), fy28e: ratio(marketCap, rev28) },
     },
   };
@@ -660,6 +678,7 @@ export function displayModel(report, current, seed) {
   const shares = asNum(inputs.shares_out_cr, 0), netDebt = asNum(inputs.net_debt_cr, 0);
   const cmp = Math.max(0, asNum(current.cmp, asNum(inputs.cmp, 0))); // a price can't be negative
   const marketCap = cmp * shares, ev = marketCap + netDebt;
+  const evApply = evMultiplesApply(report);
   const ratio = (n, d) => (typeof d === "number" && d > 0 ? n / d : null);
   return {
     revenue, ebitda, pat,
@@ -668,13 +687,18 @@ export function displayModel(report, current, seed) {
     valuation: {
       marketCap, ev,
       pe: { fy27e: ratio(marketCap, pat.fy27e), fy28e: ratio(marketCap, pat.fy28e) },
-      ev_ebitda: { fy27e: ratio(ev, ebitda.fy27e), fy28e: ratio(ev, ebitda.fy28e) },
+      ev_ebitda: evApply ? { fy27e: ratio(ev, ebitda.fy27e), fy28e: ratio(ev, ebitda.fy28e) } : { fy27e: null, fy28e: null },
       price_sales: { fy27e: ratio(marketCap, revenue.fy27e), fy28e: ratio(marketCap, revenue.fy28e) },
     },
   };
 }
 
-/** [mgmt guidance] vs [Est.] basis tag — derived from whether management guided the metric on the call. */
+/**
+ * [mgmt guidance] vs [Est.] basis tag — derived from whether management guided the metric on the call.
+ * The keyword sets MUST match pipeline/lib/model-assemble.mjs's guidedFor() calls, or the badge here
+ * disagrees with the basis text baked into the report: the margin lever uses ["ebitda","margin"], so
+ * a lender's "financing margin" guidance is recognised rather than mis-badged "Est.".
+ */
 function leverBasis(report, keywords) {
   const g = report.concall?.guidance ?? [];
   const hit = g.find(
@@ -753,8 +777,8 @@ function financialModelSection(report) {
         <h4 class="font-semibold text-slate-700">Assumptions <span class="font-normal text-slate-400 text-sm">— edit to re-model</span></h4>
       </div>
       <div class="divide-y divide-slate-100">
-        ${lever("Revenue growth", "growth_fy27", "growth_fy28", leverBasis(report, ["revenue"]))}
-        ${lever("EBITDA margin", "ebitda_margin_fy27", "ebitda_margin_fy28", leverBasis(report, ["ebitda"]))}
+        ${lever("Revenue growth", "growth_fy27", "growth_fy28", leverBasis(report, ["revenue", "growth"]))}
+        ${lever(report.meta?.lender ? "Financing margin" : "EBITDA margin", "ebitda_margin_fy27", "ebitda_margin_fy28", leverBasis(report, ["ebitda", "margin"]))}
         ${lever("Net margin", "net_margin_fy27", "net_margin_fy28", leverBasis(report, ["net margin"]))}
       </div>
       <div class="mt-3 space-y-1">${basisNotes}</div>
@@ -787,8 +811,11 @@ function valuationSection(report) {
         </span>
       </label>
       <div><div class="text-xs text-slate-500">Market cap</div><div class="font-mono text-slate-800">₹<span data-out="marketcap">${fmtCr0(m.valuation.marketCap)}</span>cr</div></div>
-      <div><div class="text-xs text-slate-500">EV</div><div class="font-mono text-slate-800">₹<span data-out="ev">${fmtCr0(m.valuation.ev)}</span>cr</div></div>
-      <div class="text-xs text-slate-400 self-center">shares &amp; net debt fixed from inputs</div>
+      ${report.meta?.lender
+        ? `<div><div class="text-xs text-slate-500">EV</div><div class="font-mono text-slate-500">n.m.</div></div>
+      <div class="text-xs text-slate-400 self-center">lender — borrowings are funding, not leverage; EV is not meaningful</div>`
+        : `<div><div class="text-xs text-slate-500">EV</div><div class="font-mono text-slate-800">₹<span data-out="ev">${fmtCr0(m.valuation.ev)}</span>cr</div></div>
+      <div class="text-xs text-slate-400 self-center">shares &amp; net debt fixed from inputs</div>`}
     </div>`;
   const vc = (name, yr, v) => `<span data-val="${name}-${yr}" class="font-mono font-medium text-slate-800">${fmtMult(v)}</span>`;
   const valTbl = table(

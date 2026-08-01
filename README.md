@@ -181,7 +181,7 @@ node worker/test/export.test.mjs
 
 | Name | Purpose |
 | --- | --- |
-| `OPENAI_API_KEY` (+ optional `ANTHROPIC_API_KEY`) | analysis LLM calls (structured outputs; cross-provider verify) |
+| `OPENAI_API_KEY` (+ optional `ANTHROPIC_API_KEY`) | analysis LLM calls (structured outputs; cross-provider verify). Transient provider failures are retried with backoff; when `ANTHROPIC_API_KEY` is set the pipeline also **fails over** to it if OpenAI is out of credit or unreachable, so one provider's billing state can't take the product down |
 | `SCREENER_EMAIL`, `SCREENER_PASSWORD` | Screener login (price / financials / peer table) |
 | `FIRECRAWL_API_KEY`, `SCRAPEDO_API_KEY` | fetch transcripts / decks / web pages |
 | `CF_ACCOUNT_ID` | Cloudflare account id |

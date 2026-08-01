@@ -13,7 +13,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callStructured, estimateCost, DEFAULT_MODEL } from "./lib/openai.mjs";
+import { estimateCost, DEFAULT_MODEL } from "./lib/openai.mjs";
+import { callModel, estimateCostFor, reportLlmFailure, availableProviders, CONFIG_USER_MESSAGE } from "./lib/llm.mjs";
 import { RISK_THESIS_JSON_SCHEMA } from "./lib/research-schema.mjs";
 import { buildRiskThesisMessages, assembleResearch, validateResearch } from "./lib/research-assemble.mjs";
 import { gatherWebContext, researchQueries } from "./lib/websearch.mjs";
@@ -29,10 +30,16 @@ async function main() {
   const apiKey = process.env.OPENAI_API_KEY;
   const firecrawlKey = process.env.FIRECRAWL_API_KEY;
   log.step(`Munshot research-concall (C.6 + D) — model ${OPENAI_MODEL}`);
-  if (!apiKey) { log.err("OPENAI_API_KEY missing — cannot research"); process.exitCode = 1; return; }
 
   const found = await findOutDir(OUT_ROOT, arg);
   if (!found) { log.err(`no bundle found in pipeline/out/${arg ? ` for "${arg}"` : ""} — run fetch-company first`); process.exitCode = 1; return; }
+
+  // Checked AFTER the bundle is resolved so a missing key can be written to error.txt as a specific
+  // reason, rather than surfacing as the generic catch-all.
+  if (!availableProviders().length) {
+    await reportLlmFailure(found.dir, "research", { kind: "config", message: "no LLM provider configured (set OPENAI_API_KEY or ANTHROPIC_API_KEY)", userMessage: CONFIG_USER_MESSAGE });
+    process.exitCode = 1; return;
+  }
   const { dir, slug } = found;
 
   let report;
@@ -41,23 +48,31 @@ async function main() {
   log.ok(`report: ${report.meta?.company} (${report.meta?.ticker}) → ${dir}`);
 
   // ── web research (targeted queries; graceful if no provider) ──
+  // Web search must respect the SAME provider-health state as the structured calls. If Step 7 already
+  // proved OpenAI dead, handing its key to gatherWebContext would spend 6 sequential searches × 90s
+  // (up to ~9 min) rediscovering that, and the job only has 20 minutes for everything. Firecrawl is
+  // already the fallback path, so dropping the key degrades cleanly instead of stalling.
+  const openaiHealthy = availableProviders().some((p) => p.provider === "openai");
+  if (apiKey && !openaiHealthy) log.warn("OpenAI marked unhealthy earlier this run — skipping OpenAI web_search, using Firecrawl only");
   const queries = researchQueries(report.meta?.company, report.about?.sector);
   log.step(`Web research — ${queries.length} targeted queries${firecrawlKey ? "" : " (no FIRECRAWL_API_KEY; OpenAI web_search only)"}`);
-  const web = await gatherWebContext({ queries, openaiKey: apiKey, model: OPENAI_MODEL, firecrawlKey, log });
+  const web = await gatherWebContext({ queries, openaiKey: openaiHealthy ? apiKey : null, model: OPENAI_MODEL, firecrawlKey, log });
   log.info(`web provider: ${web.provider} · ${web.citations.length} citations · ${web.context.length} context chars`);
   if (web.provider === "none") log.warn("no web findings — risks will be empty; thesis will be Est.-only");
 
   // ── structured risk + thesis extraction ──
   const messages = buildRiskThesisMessages(report, web, {});
-  let llm, usage, model;
+  let llm, usage, model, provider;
   try {
-    log.step("Calling OpenAI (structured outputs) for risks + thesis…");
-    ({ data: llm, usage, model } = await callStructured({ apiKey, model: OPENAI_MODEL, messages, schema: RISK_THESIS_JSON_SCHEMA, schemaName: "risk_thesis" }));
+    ({ data: llm, usage, model, provider } = await callModel({ messages, schema: RISK_THESIS_JSON_SCHEMA, schemaName: "risk_thesis", purpose: "C.6 risks + Section D thesis" }));
   } catch (e) {
-    log.err(`OpenAI call failed: ${e.message}`); process.exitCode = 1; return;
+    await reportLlmFailure(dir, "research", e); process.exitCode = 1; return;
   }
-  const cost = estimateCost(usage, model);
-  const webCost = estimateCost({ prompt_tokens: web.usage.input_tokens, completion_tokens: web.usage.output_tokens }, model);
+  const cost = estimateCostFor(provider, usage, model);
+  // Price the web-search tokens against the model that actually produced them. `model` above is
+  // whoever answered the STRUCTURED call, which may be Anthropic after a failover — pricing OpenAI
+  // web-search usage with a Claude id silently falls back to default rates and misstates the cost.
+  const webCost = estimateCost({ prompt_tokens: web.usage.input_tokens, completion_tokens: web.usage.output_tokens }, OPENAI_MODEL);
   log.ok(`extracted: ${llm.risks?.length || 0} risks · ${llm.thesis?.length || 0} thesis · ${llm.anti_thesis?.length || 0} anti-thesis`);
   log.info(`tokens: research in ${cost.inTok}/out ${cost.outTok} + web in ${webCost.inTok}/out ${webCost.outTok} · est. cost $${(cost.usd + webCost.usd).toFixed(4)} (priced as ${cost.priced_as})`);
 
@@ -67,7 +82,7 @@ async function main() {
   const schema = JSON.parse(await readFile(SCHEMA_PATH, "utf8"));
   const v = validateResearch(merged, schema);
   merged._step8_research = {
-    model, web_provider: web.provider, citations: web.citations.length,
+    provider, model, web_provider: web.provider, citations: web.citations.length,
     tokens: { research_in: cost.inTok, research_out: cost.outTok, web_in: webCost.inTok, web_out: webCost.outTok },
     est_cost_usd: Number((cost.usd + webCost.usd).toFixed(4)), validated: v.ok, researched_at: merged.meta.generated_at,
   };
