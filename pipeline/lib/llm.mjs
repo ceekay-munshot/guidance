@@ -90,6 +90,15 @@ export function clearProviderHealth() {
   try { rmSync(HEALTH_FILE, { force: true }); } catch { /* best-effort */ }
 }
 
+/**
+ * Is this provider still usable this run? STRICT — unlike availableProviders(), there is no
+ * "if it's all we have, try anyway" fallback. Callers whose work is OPTIONAL (the Step 8b audit,
+ * web search) use this so they never re-pay a dead provider's budget for something skippable.
+ */
+export function isProviderHealthy(provider) {
+  return !readUnhealthy()[provider];
+}
+
 /** A durable failure is one no later step should pay to rediscover. */
 const isDurable = (e) => e.kind === "quota" || e.kind === "auth" || !!e.budgetSpent;
 

@@ -138,7 +138,7 @@ function headerStrip(report) {
     <div class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm">
       ${stat("CMP", rupees(i.cmp))}
       ${stat("Mkt cap", rupeesCr(i.market_cap_cr))}
-      ${stat("Net debt", rupeesCr(i.net_debt_cr))}
+      ${stat(m.lender ? "Borrowings" : "Net debt", rupeesCr(i.net_debt_cr))}
     </div>
   </section>`;
 }
@@ -562,7 +562,11 @@ export function seedEdits(report) {
 function evMultiplesApply(report) {
   if (report?.meta?.lender) return false;
   const eb = rowByKey(report, "ebitda");
-  return typeof eb?.fy26a === "number" && isFinite(eb.fy26a);
+  // Must match pipeline/lib/model-assemble.mjs's `!numOrNull(fy26a.ebitda)` EXACTLY, zero included.
+  // A FY26A EBITDA of 0 — often a tiny value rounded to zero by fetch-company — is not an anchor,
+  // and treating it as one here while the pipeline treated it as missing meant the stored report
+  // showed "n.m." and the first lever edit quietly replaced it with a number.
+  return typeof eb?.fy26a === "number" && isFinite(eb.fy26a) && eb.fy26a !== 0;
 }
 
 export function computeModel(report, edits) {
@@ -802,8 +806,11 @@ function valuationSection(report) {
         </span>
       </label>
       <div><div class="text-xs text-slate-500">Market cap</div><div class="font-mono text-slate-800">₹<span data-out="marketcap">${fmtCr0(m.valuation.marketCap)}</span>cr</div></div>
-      <div><div class="text-xs text-slate-500">EV</div><div class="font-mono text-slate-800">₹<span data-out="ev">${fmtCr0(m.valuation.ev)}</span>cr</div></div>
-      <div class="text-xs text-slate-400 self-center">shares &amp; net debt fixed from inputs</div>
+      ${report.meta?.lender
+        ? `<div><div class="text-xs text-slate-500">EV</div><div class="font-mono text-slate-500">n.m.</div></div>
+      <div class="text-xs text-slate-400 self-center">lender — borrowings are funding, not leverage; EV is not meaningful</div>`
+        : `<div><div class="text-xs text-slate-500">EV</div><div class="font-mono text-slate-800">₹<span data-out="ev">${fmtCr0(m.valuation.ev)}</span>cr</div></div>
+      <div class="text-xs text-slate-400 self-center">shares &amp; net debt fixed from inputs</div>`}
     </div>`;
   const vc = (name, yr, v) => `<span data-val="${name}-${yr}" class="font-mono font-medium text-slate-800">${fmtMult(v)}</span>`;
   const valTbl = table(

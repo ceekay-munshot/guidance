@@ -54,7 +54,7 @@ async function main() {
   log.info(ctx ? `valuation context: current P/E ${ctx.current_pe ?? "n/a"}, 5-yr median ${ctx.hist_median_pe ?? "n/a"}, peer median ${ctx.peer_median_pe ?? "n/a"}` : "valuation context: unavailable (older bundle) — sanity-check judged on absolute multiple");
 
   // ── model call (assumptions + prose only) ──
-  const messages = buildModelMessages(report, fy26a, ctx, {});
+  const messages = buildModelMessages(report, fy26a, ctx, { lender: !!bundle.meta?.lender });
   let llm, usage, model, provider;
   try {
     ({ data: llm, usage, model, provider } = await callModel({ messages, schema: MODEL_JSON_SCHEMA, schemaName: "financial_model", purpose: "the E/F/G model levers" }));

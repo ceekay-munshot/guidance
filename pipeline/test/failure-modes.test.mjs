@@ -164,6 +164,13 @@ hosts = [];
 }
 globalThis.fetch = realFetch;
 
+// The failover tests above deliberately marked providers dead, and that state now lives in a FILE
+// shared by every later assertion — so clear it before anything that reads provider health.
+{
+  const { clearProviderHealth } = await import("../lib/llm.mjs");
+  clearProviderHealth();
+}
+
 // ── 4. the verifier must never be the model that produced the extraction ──
 const { chooseVerifier, verifierCandidates } = await import("../verify-extract.mjs");
 const withEnv = (env, fn) => {
@@ -321,6 +328,19 @@ const MODEL_LLM = JSON.parse(await readFile(F("../test-fixtures/model-response.j
   const r = assembleModel(base, { revenue: 2023, ebitda: 580, ebitda_margin_pct: 29, pat: 364, net_margin_pct: 18, gross_margin_pct: null }, MODEL_LLM, null, { generated_at: "2026-08-01T00:00:00Z" });
   ok(typeof r.report.valuation.ev_ebitda.fy27e === "number", "a normal company with a real EBITDA anchor still gets EV/EBITDA");
 }
+{
+  // The stored artifact and the frontend recompute must agree on what counts as an anchor — including
+  // EXACTLY ZERO, which the pipeline treats as missing and the frontend previously accepted.
+  const LEV = { growth_fy27: 12, growth_fy28: 10, ebitda_margin_fy27: 25, ebitda_margin_fy28: 25, net_margin_fy27: 15, net_margin_fy28: 15 };
+  for (const [name, ebitda] of [["a real anchor", 580], ["exactly zero", 0], ["missing", null]]) {
+    const r = assembleModel(JSON.parse(JSON.stringify(REPORT_FIXTURE)),
+      { revenue: 2023, ebitda, ebitda_margin_pct: ebitda === null ? null : 29, pat: 364, net_margin_pct: 18, gross_margin_pct: null },
+      MODEL_LLM, null, { generated_at: "2026-08-01T00:00:00Z" });
+    const stored = r.report.valuation.ev_ebitda.fy27e;
+    const afterEdit = computeModel(r.report, LEV).valuation.ev_ebitda.fy27e;
+    ok((stored === null) === (afterEdit === null), `${name}: stored and post-edit EV/EBITDA agree (no drift)`);
+  }
+}
 
 // ── 8. classifier + model-id edges surfaced by review ──
 {
@@ -366,6 +386,56 @@ const MODEL_LLM = JSON.parse(await readFile(F("../test-fixtures/model-response.j
   ok(thrown?.retryable === true, "…and it is retryable, so retry + failover still apply");
   ok(elapsed < 3000, `…and it happens on the timeout, not the job ceiling (${elapsed}ms)`);
   globalThis.fetch = realFetch;
+}
+
+// ── 10. lender reports must not present a lender's numbers under manufacturer names ──
+{
+  const { buildModelMessages } = await import("../lib/model-assemble.mjs");
+  const FY26A_LENDER = { revenue: 3218, ebitda: 1472, ebitda_margin_pct: 46, pat: 1099, net_margin_pct: 34.2, gross_margin_pct: null };
+  const base = JSON.parse(JSON.stringify(REPORT_FIXTURE));
+
+  const lenderMsgs = buildModelMessages(base, FY26A_LENDER, null, { lender: true });
+  const sys = lenderMsgs[0].content, usr = lenderMsgs[1].content;
+  ok(/ALREADY NET OF INTEREST COST/.test(sys), "lender prompt tells the model the profit line is net of interest…");
+  ok(/FINANCING MARGIN/i.test(sys), "…that the margin lever means financing margin…");
+  ok(/not leverage/i.test(sys), "…and not to reason about EV / net debt");
+  ok(/financing profit 1472/.test(usr), "the FY26A line names financing profit, not EBITDA");
+  ok(!/net debt ₹/.test(usr), "…and the price inputs don't hand it a 'net debt' to model with");
+
+  const normalMsgs = buildModelMessages(base, FY26A_LENDER, null, {});
+  ok(!/ALREADY NET OF INTEREST COST/.test(normalMsgs[0].content) && /EBITDA 1472/.test(normalMsgs[1].content),
+    "a normal company's prompt is unchanged");
+}
+{
+  const lenderRows = assembleModel(JSON.parse(JSON.stringify(REPORT_FIXTURE)),
+    { revenue: 3218, ebitda: 1472, ebitda_margin_pct: 46, pat: 1099, net_margin_pct: 34.2, gross_margin_pct: null },
+    MODEL_LLM, null, { generated_at: "2026-08-01T00:00:00Z", lender: true }).report.financials.rows;
+  const eb = lenderRows.find((r) => r.key === "ebitda");
+  const em = lenderRows.find((r) => r.key === "ebitda_margin_pct");
+  ok(eb.metric === "Financing profit" && em.metric === "Financing margin %", "lender rows are LABELLED as financing profit/margin");
+  ok(eb.key === "ebitda" && em.key === "ebitda_margin_pct", "…while the stable keys are unchanged, so every consumer still resolves them");
+  ok(!lenderRows.some((r) => r.key === "adj_ebitda_margin_pct"), "a lender never gets an 'Adjusted EBITDA' row");
+}
+{
+  // Exports must not call a lender's borrowings "net debt" — the report's own prose says they aren't.
+  const { reportContent } = await import("../../public/js/export.js");
+  const rep = JSON.parse(JSON.stringify(REPORT_FIXTURE));
+  rep.meta.lender = true;
+  ok(reportContent(rep).lender === true, "export context carries the lender flag through to every renderer");
+  const plain = JSON.parse(JSON.stringify(REPORT_FIXTURE));
+  ok(reportContent(plain).lender === false, "…and a normal company is unaffected");
+}
+
+// ── 11. the audit must not re-probe a provider already proven dead ──
+// (explicit `healthy` stubs below — no dependency on whatever the health file happens to hold)
+{
+  const openaiDead = (p) => p !== "openai";
+  const allHealthy = () => true;
+  const withKeys = { OPENAI_API_KEY: "o", ANTHROPIC_API_KEY: "a" };
+  const live = withEnv(withKeys, () => verifierCandidates({ provider: "anthropic", model: "claude-sonnet-5" }, allHealthy));
+  ok(live.length === 1 && live[0].provider === "openai", "healthy OpenAI is still offered after an Anthropic extraction");
+  const dead = withEnv(withKeys, () => verifierCandidates({ provider: "anthropic", model: "claude-sonnet-5" }, openaiDead));
+  ok(dead.length === 0, "an already-dead OpenAI is NOT re-probed — the audit skips instead of burning a 2nd 90s budget");
 }
 
 console.log(fails === 0 ? "\nFAILURE-MODE OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);

@@ -19,6 +19,7 @@ import { callStructured, estimateCost } from "./lib/openai.mjs";
 import { callAnthropicStructured, estimateAnthropicCost, DEFAULT_VERIFY_MODEL_ANTHROPIC } from "./lib/anthropic.mjs";
 import { VERIFY_JSON_SCHEMA } from "./lib/research-schema.mjs";
 import { buildClaims, buildVerifyMessages, applyVerification } from "./lib/verify.mjs";
+import { isProviderHealthy } from "./lib/llm.mjs";
 import { findOutDir } from "./lib/out.mjs";
 import { log } from "./lib/util.mjs";
 
@@ -49,9 +50,12 @@ const sameModel = (a, b) => !!a && !!b && canonicalModel(a) === canonicalModel(b
  * this, extractor and verifier would both default to claude-sonnet-5 in exactly that outage, leaving
  * one model marking its own homework.
  */
-export function verifierCandidates(extractedBy = {}) {
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  const openaiKey = process.env.OPENAI_API_KEY;
+export function verifierCandidates(extractedBy = {}, healthy = isProviderHealthy) {
+  // A provider already proven dead this run is not a candidate. The audit is OPTIONAL, so re-probing
+  // a known-dead provider would spend another full 90s budget on something we're willing to skip —
+  // undoing the cross-step bound the health marker exists to provide.
+  const anthropicKey = healthy("anthropic") ? process.env.ANTHROPIC_API_KEY : null;
+  const openaiKey = healthy("openai") ? process.env.OPENAI_API_KEY : null;
   const by = extractedBy.provider || "openai"; // older reports predate _step7.provider
   const byModel = extractedBy.model || "";
 
@@ -108,7 +112,7 @@ async function main() {
     await writeFile(join(dir, "verification.json"), JSON.stringify(audit, null, 2));
   };
   if (!candidates.length) {
-    const why = `no independent verifier available (extraction ran on ${by}; only the same model is configured)`;
+    const why = `no independent verifier available (extraction ran on ${by}; the alternatives are unconfigured or already marked unhealthy this run)`;
     log.warn(`${why} — SKIPPING the audit rather than letting a model mark its own homework`);
     log.info("set ANTHROPIC_API_KEY (or VERIFY_MODEL) so the audit runs on a different model family");
     await writeSkipped(why, null);
