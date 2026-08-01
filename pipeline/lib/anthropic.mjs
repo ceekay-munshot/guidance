@@ -35,7 +35,7 @@ export async function callAnthropicStructured({ apiKey, model, messages, schema,
     } catch (e) {
       if (!e.retryable || attempt >= retries) throw e;
       const wait = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
-      if (leftMs() <= wait) { e.message += ` (gave up: ${Math.round(budgetMs / 1000)}s provider budget spent)`; throw e; }
+      if (leftMs() <= wait) { e.budgetSpent = true; e.message += ` (gave up: ${Math.round(budgetMs / 1000)}s provider budget spent)`; throw e; }
       onRetry?.({ attempt: attempt + 1, of: retries, waitMs: wait, error: e });
       await sleep(wait);
     }

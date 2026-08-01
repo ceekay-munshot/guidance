@@ -61,6 +61,9 @@ export function buildModelMessages(report, fy26a, ctx, { } = {}) {
  * builds the valuation multiples + a real "vs history/peers" sanity-check, and derives monitorables
  * from C.1 guidance. Returns { report, warnings, richness, valuationInternal }.
  */
+/** Finite number or null — used to test whether a real FY26A actual exists. */
+const numOrNull = (v) => (typeof v === "number" && isFinite(v) ? v : null);
+
 export function assembleModel(report, fy26a, llm, ctx, { generated_at, positiveTone, lender = false } = {}) {
   const out = { ...(report || {}) };
   const warnings = [];
@@ -109,7 +112,20 @@ export function assembleModel(report, fy26a, llm, ctx, { generated_at, positiveT
   const v = computeValuation(out.meta?.inputs || {}, f);
   const richness = assessValuationRichness(v.pe.fy27e, ctx || {});
   const sanity = buildSanityCheck({ valuation: v, inputs: out.meta?.inputs || {}, currentPe: ctx ? numOr(ctx.current_pe) : null, richness, positiveTone: !!positiveTone, lender: !!lender });
-  out.valuation = { pe: v.pe, ev_ebitda: v.ev_ebitda, price_sales: v.price_sales, sanity_check: sanity };
+  // EV-based multiples are suppressed outright — stored as null, rendered "n.m." — when they cannot
+  // mean what they claim to:
+  //   • a LENDER, where borrowings are funding not leverage and "EBITDA" is Screener's Financing
+  //     Profit, so EV and EV/EBITDA are category errors rather than merely imprecise; and
+  //   • no FY26A EBITDA anchor at all, where the forward multiple would rest entirely on an LLM's
+  //     margin guess with no actual to anchor it — a parse regression would otherwise publish a
+  //     confident-looking multiple built on nothing.
+  // Publishing "n.m." is the same treatment the schema and UI already give a non-positive denominator.
+  const evMeaningless = !!lender || !numOrNull(fy26a.ebitda);
+  const evEbitda = evMeaningless ? { fy27e: null, fy28e: null } : v.ev_ebitda;
+  if (evMeaningless) warnings.push(lender
+    ? "lender (bank/NBFC): EV/EBITDA and net-debt multiples suppressed as n.m. — judge on P/E, P/B, RoA"
+    : "no FY26A EBITDA actual — EV/EBITDA suppressed as n.m. rather than published off an unanchored margin assumption");
+  out.valuation = { pe: v.pe, ev_ebitda: evEbitda, price_sales: v.price_sales, sanity_check: sanity };
   if (v.pe.fy27e == null || v.ev_ebitda.fy27e == null) warnings.push("a FY27E multiple is n.m. (denominator ≤ 0) — the company may be loss-making; stored as null and rendered 'n.m.' (schema-valid)");
 
   // G — next steps.

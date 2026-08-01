@@ -552,6 +552,19 @@ export function seedEdits(report) {
  * PURE deterministic recompute. Returns the forecast rows + valuation for the given edits.
  * Keys off row `key` (never labels). Guardrails: a multiple with denominator ≤ 0 → null (→ "n.m.").
  */
+/**
+ * Do EV-based multiples mean anything for this company? Mirrors pipeline/lib/model-assemble.mjs
+ * exactly. False for a LENDER (borrowings are funding, not leverage, and "EBITDA" is Screener's
+ * Financing Profit) and when there is no FY26A EBITDA actual to anchor the forecast. In both cases
+ * EV/EBITDA renders "n.m." — and it must stay "n.m." after a lever edit too, otherwise recomputing
+ * would quietly resurrect the number the report just called meaningless.
+ */
+function evMultiplesApply(report) {
+  if (report?.meta?.lender) return false;
+  const eb = rowByKey(report, "ebitda");
+  return typeof eb?.fy26a === "number" && isFinite(eb.fy26a);
+}
+
 export function computeModel(report, edits) {
   const e = edits || {};
   const inputs = report.meta?.inputs ?? {};
@@ -580,6 +593,7 @@ export function computeModel(report, edits) {
 
   const marketCap = cmp * shares;
   const ev = marketCap + netDebt;
+  const evApply = evMultiplesApply(report);
   const ratio = (n, d) => (typeof d === "number" && d > 0 ? n / d : null); // ≤0 denominator → n.m.
 
   return {
@@ -591,7 +605,7 @@ export function computeModel(report, edits) {
     valuation: {
       cmp, marketCap, ev,
       pe: { fy27e: ratio(marketCap, pat27), fy28e: ratio(marketCap, pat28) },
-      ev_ebitda: { fy27e: ratio(ev, eb27), fy28e: ratio(ev, eb28) },
+      ev_ebitda: evApply ? { fy27e: ratio(ev, eb27), fy28e: ratio(ev, eb28) } : { fy27e: null, fy28e: null },
       price_sales: { fy27e: ratio(marketCap, rev27), fy28e: ratio(marketCap, rev28) },
     },
   };
@@ -660,6 +674,7 @@ export function displayModel(report, current, seed) {
   const shares = asNum(inputs.shares_out_cr, 0), netDebt = asNum(inputs.net_debt_cr, 0);
   const cmp = Math.max(0, asNum(current.cmp, asNum(inputs.cmp, 0))); // a price can't be negative
   const marketCap = cmp * shares, ev = marketCap + netDebt;
+  const evApply = evMultiplesApply(report);
   const ratio = (n, d) => (typeof d === "number" && d > 0 ? n / d : null);
   return {
     revenue, ebitda, pat,
@@ -668,7 +683,7 @@ export function displayModel(report, current, seed) {
     valuation: {
       marketCap, ev,
       pe: { fy27e: ratio(marketCap, pat.fy27e), fy28e: ratio(marketCap, pat.fy28e) },
-      ev_ebitda: { fy27e: ratio(ev, ebitda.fy27e), fy28e: ratio(ev, ebitda.fy28e) },
+      ev_ebitda: evApply ? { fy27e: ratio(ev, ebitda.fy27e), fy28e: ratio(ev, ebitda.fy28e) } : { fy27e: null, fy28e: null },
       price_sales: { fy27e: ratio(marketCap, revenue.fy27e), fy28e: ratio(marketCap, revenue.fy28e) },
     },
   };

@@ -19,7 +19,9 @@
 // production setup — behaviour is unchanged apart from the retries.
 
 import { writeFile } from "node:fs/promises";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { callStructured, estimateCost, DEFAULT_MODEL } from "./openai.mjs";
 import { callAnthropicStructured, estimateAnthropicCost } from "./anthropic.mjs";
 import { log } from "./util.mjs";
@@ -31,10 +33,44 @@ export const DEFAULT_FALLBACK_MODEL_ANTHROPIC = "claude-sonnet-5";
 const FAILOVER_KINDS = new Set(["quota", "auth", "rate_limit", "server", "network"]);
 
 /**
+ * Providers proven dead are remembered for the REST OF THE JOB, in a file.
+ *
+ * Each workflow step is its own `node` process, so an in-memory flag would forget between Extract,
+ * Research, Model and Finalize — and a persistently hanging provider would be re-probed (and its
+ * whole retry budget re-spent) five times over, which can exceed the job's `timeout-minutes: 20`
+ * before the fallback ever publishes. The workspace persists across steps, so a marker file here
+ * makes "this provider is dead" a fact for the whole run: the first step pays to discover it, every
+ * later step fails straight over.
+ *
+ * Only DURABLE failures are recorded — out of credit, rejected credentials, or a provider that
+ * burned its entire budget without answering. A passing rate-limit is not held against it.
+ */
+const OUT_ROOT = fileURLToPath(new URL("../out/", import.meta.url));
+const HEALTH_FILE = join(OUT_ROOT, ".provider-health.json");
+
+function readUnhealthy() {
+  try { return JSON.parse(readFileSync(HEALTH_FILE, "utf8")) || {}; } catch { return {}; }
+}
+
+/** Record a provider as unusable for the remainder of this run. Best-effort — never throws. */
+export function markProviderUnhealthy(provider, reason) {
+  try {
+    mkdirSync(OUT_ROOT, { recursive: true });
+    const cur = readUnhealthy();
+    cur[provider] = { reason, at: new Date().toISOString() };
+    writeFileSync(HEALTH_FILE, JSON.stringify(cur, null, 2));
+  } catch { /* best-effort */ }
+}
+
+/** A durable failure is one no later step should pay to rediscover. */
+const isDurable = (e) => e.kind === "quota" || e.kind === "auth" || !!e.budgetSpent;
+
+/**
  * The providers this run can use, in preference order. OpenAI stays primary (it is what every prompt
- * was tuned against); Anthropic is the standby.
+ * was tuned against); Anthropic is the standby. Providers already proven dead this run are dropped.
  */
 export function availableProviders() {
+  const dead = readUnhealthy();
   const out = [];
   if (process.env.OPENAI_API_KEY) {
     out.push({ provider: "openai", key: process.env.OPENAI_API_KEY, model: process.env.OPENAI_MODEL || DEFAULT_MODEL });
@@ -42,7 +78,10 @@ export function availableProviders() {
   if (process.env.ANTHROPIC_API_KEY) {
     out.push({ provider: "anthropic", key: process.env.ANTHROPIC_API_KEY, model: process.env.ANTHROPIC_MODEL || DEFAULT_FALLBACK_MODEL_ANTHROPIC });
   }
-  return out;
+  // Keep a dead provider ONLY if it's all we have — a doomed attempt still beats no attempt, and it
+  // produces the accurate error message rather than a bare "no provider configured".
+  const alive = out.filter((p) => !dead[p.provider]);
+  return alive.length ? alive : out;
 }
 
 /** Cost estimate for whichever provider actually answered. */
@@ -77,6 +116,12 @@ export async function callModel({ messages, schema, schemaName, maxTokens = 8000
       return { ...r, provider: p.provider };
     } catch (e) {
       lastErr = e;
+      // Out of credit / bad key / burned its whole budget → don't make the next four steps
+      // rediscover that at 90s a piece.
+      if (isDurable(e)) {
+        markProviderUnhealthy(p.provider, `${e.kind}: ${e.message.slice(0, 160)}`);
+        log.warn(`${p.provider} marked unhealthy for the rest of this run (${e.kind})`);
+      }
       const next = providers[i + 1];
       if (next && FAILOVER_KINDS.has(e.kind)) {
         log.warn(`${p.provider} unavailable (${e.kind}): ${e.message.slice(0, 200)}`);

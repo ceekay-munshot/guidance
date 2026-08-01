@@ -104,6 +104,9 @@ export function assembleReport(existing, bundle, llm, { pptOnly = false, generat
     quarter_confirmed: !!bm.quarter_confirmed,
     generated_at: generated_at || null,
     transcript_available: !!bm.transcript_available,
+    // Lender (bank/NBFC) layout — every renderer needs this, not just the pipeline, because it
+    // decides whether EV/EBITDA and net debt mean anything for this company.
+    lender: !!bm.lender,
     sources: {
       transcript_url: bundle.sources?.transcript_url ?? null,
       ppt_url: bundle.sources?.ppt_url ?? null,

@@ -21,9 +21,14 @@ const RETRY_DELAYS_MS = [2000, 6000, 15000];
  * to survive — burns the full per-attempt timeout every time. Four 180s attempts would pin a single
  * step for ~12m before the fallback provider is even tried, and the job's `timeout-minutes: 20`
  * has to cover document fetching plus all five LLM stages. This budget bounds it: once spent, the
- * provider is declared unusable and callModel moves on, so failover happens in minutes, not tens.
+ * provider is declared unusable and callModel moves on.
+ *
+ * The budget is PER CALL, and each of the five steps is its own process — so it is paired with the
+ * cross-step health marker in llm.mjs. A provider that spends its whole budget is recorded as dead
+ * for the run, and later steps fail over immediately instead of re-paying 90s each. Worst case for a
+ * silently hanging primary is therefore ~90s once, not 90s × 5.
  */
-export const PROVIDER_BUDGET_MS = 240000; // 4 minutes
+export const PROVIDER_BUDGET_MS = 90000; // 90s — five LLM steps must all fit inside one 20-min job
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -130,7 +135,8 @@ export async function callStructured({ apiKey, model, messages, schema, schemaNa
     } catch (e) {
       if (!e.retryable || attempt >= retries) throw e;
       const wait = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
-      if (leftMs() <= wait) { e.message += ` (gave up: ${Math.round(budgetMs / 1000)}s provider budget spent)`; throw e; }
+      // budgetSpent tells callModel this provider is dead for the run, not just for this call.
+      if (leftMs() <= wait) { e.budgetSpent = true; e.message += ` (gave up: ${Math.round(budgetMs / 1000)}s provider budget spent)`; throw e; }
       onRetry?.({ attempt: attempt + 1, of: retries, waitMs: wait, error: e });
       await sleep(wait);
     }

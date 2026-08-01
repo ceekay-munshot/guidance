@@ -29,31 +29,40 @@ const DEFAULT_VERIFY_MODEL = "gpt-4o"; // OpenAI, deliberately a DIFFERENT model
 const sameModel = (a, b) => !!a && !!b && (String(a).startsWith(String(b)) || String(b).startsWith(String(a)));
 
 /**
- * Pick the verifier, given WHO produced the extraction (report._step7). An audit is only worth
- * running if the auditor is independent of the author, so preference order is:
+ * Every verifier that is independent of the extractor, best first:
  *   1. a different PROVIDER than the extractor  (true cross-provider check)
  *   2. the same provider but a genuinely different MODEL
- *   3. nothing independent available → null, and the caller skips the audit
+ * The caller tries them in order, so a preferred-but-unreachable verifier (expired Anthropic key,
+ * exhausted quota, outage) falls through to the next INDEPENDENT option instead of silently
+ * removing verification altogether. An empty list means nothing independent exists — then, and only
+ * then, the audit is skipped.
  *
- * Step 3 matters now that lib/llm.mjs can fail extraction over to Anthropic: in that exact outage
- * both the extractor and the verifier would otherwise default to claude-sonnet-5, leaving one model
- * marking its own homework — the correlated errors an audit exists to catch would sail through.
+ * Independence matters more now that lib/llm.mjs can fail extraction over to Anthropic: without
+ * this, extractor and verifier would both default to claude-sonnet-5 in exactly that outage, leaving
+ * one model marking its own homework.
  */
-export function chooseVerifier(extractedBy = {}) {
+export function verifierCandidates(extractedBy = {}) {
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
   const override = process.env.VERIFY_MODEL;
   const by = extractedBy.provider || "openai"; // older reports predate _step7.provider
   const byModel = extractedBy.model || "";
+  const out = [];
 
-  if (by !== "anthropic" && anthropicKey) return { provider: "anthropic", key: anthropicKey, model: override || DEFAULT_VERIFY_MODEL_ANTHROPIC, independence: "cross-provider" };
-  if (by !== "openai" && openaiKey) return { provider: "openai", key: openaiKey, model: override || DEFAULT_VERIFY_MODEL, independence: "cross-provider" };
+  if (by !== "anthropic" && anthropicKey) out.push({ provider: "anthropic", key: anthropicKey, model: override || DEFAULT_VERIFY_MODEL_ANTHROPIC, independence: "cross-provider" });
+  if (by !== "openai" && openaiKey) out.push({ provider: "openai", key: openaiKey, model: override || DEFAULT_VERIFY_MODEL, independence: "cross-provider" });
 
-  const key = by === "anthropic" ? anthropicKey : openaiKey;
-  const model = by === "anthropic" ? (override || DEFAULT_VERIFY_MODEL_ANTHROPIC) : (override || DEFAULT_VERIFY_MODEL);
-  if (key && !sameModel(model, byModel)) return { provider: by, key, model, independence: "same provider, different model" };
-  return null;
+  const sameKey = by === "anthropic" ? anthropicKey : openaiKey;
+  const sameDefault = by === "anthropic" ? (override || DEFAULT_VERIFY_MODEL_ANTHROPIC) : (override || DEFAULT_VERIFY_MODEL);
+  if (sameKey && !sameModel(sameDefault, byModel)) out.push({ provider: by, key: sameKey, model: sameDefault, independence: "same provider, different model" });
+  return out;
 }
+
+/** Backwards-compatible single-best pick (null when nothing independent is available). */
+export function chooseVerifier(extractedBy = {}) {
+  return verifierCandidates(extractedBy)[0] || null;
+}
+
 
 async function main() {
   const arg = (process.argv[2] || process.env.COMPANY || "").trim();
@@ -70,46 +79,58 @@ async function main() {
   const transcriptAvailable = !!report.meta?.transcript_available && transcript.trim().length > 500;
   log.ok(`report: ${report.meta?.company} (${report.meta?.ticker}) · transcript ${transcript.length} chars`);
 
-  // The verifier is chosen AGAINST the extractor recorded in _step7, so it is never the same model.
+  // Verifiers are chosen AGAINST the extractor recorded in _step7, so none of them is the same model.
   const extractedBy = report._step7 || {};
-  const V = chooseVerifier(extractedBy);
-  if (!V) {
-    const why = `no independent verifier available (extraction ran on ${extractedBy.provider || "openai"}/${extractedBy.model || "?"}; only the same model is configured)`;
+  const by = `${extractedBy.provider || "openai"}/${extractedBy.model || "?"}`;
+  const candidates = verifierCandidates(extractedBy);
+  const writeSkipped = async (why, V) => {
+    const audit = { slug, company: report.meta?.company || null, quarter: report.meta?.quarter || null, provider: V?.provider || null, model: V?.model || null, transcript_available: transcriptAvailable, checked: 0, skipped: why, verdicts: [], dropped: [] };
+    await writeFile(join(dir, "verification.json"), JSON.stringify(audit, null, 2));
+  };
+  if (!candidates.length) {
+    const why = `no independent verifier available (extraction ran on ${by}; only the same model is configured)`;
     log.warn(`${why} — SKIPPING the audit rather than letting a model mark its own homework`);
     log.info("set ANTHROPIC_API_KEY (or VERIFY_MODEL) so the audit runs on a different model family");
-    const audit = { slug, company: report.meta?.company || null, quarter: report.meta?.quarter || null, provider: null, model: null, transcript_available: transcriptAvailable, checked: 0, skipped: why, verdicts: [], dropped: [] };
-    await writeFile(join(dir, "verification.json"), JSON.stringify(audit, null, 2));
+    await writeSkipped(why, null);
     return;
   }
-  log.info(`extraction by ${extractedBy.provider || "openai"}/${extractedBy.model || "?"} → verifying with ${V.provider}/${V.model} (${V.independence})`);
+  log.info(`extraction by ${by} → verifier candidates: ${candidates.map((c) => `${c.provider}/${c.model}`).join(", ")}`);
 
   const claims = buildClaims(report, { transcriptAvailable });
   if (!transcriptAvailable || !claims.length) {
     // Nothing transcript-sourced to audit — write a "skipped" sidecar and exit clean (not a failure).
-    const audit = { slug, company: report.meta?.company || null, quarter: report.meta?.quarter || null, provider: V.provider, model: V.model, transcript_available: transcriptAvailable, checked: 0, skipped: transcriptAvailable ? "no transcript-sourced claims" : "no transcript", verdicts: [], dropped: [] };
-    await writeFile(join(dir, "verification.json"), JSON.stringify(audit, null, 2));
-    log.warn(`verification skipped (${audit.skipped}) — wrote verification.json with 0 verdicts`);
+    // No verifier has been called yet, so record the one we WOULD have used.
+    const why = transcriptAvailable ? "no transcript-sourced claims" : "no transcript";
+    await writeSkipped(why, candidates[0]);
+    log.warn(`verification skipped (${why}) — wrote verification.json with 0 verdicts`);
     return;
   }
   log.info(`auditing ${claims.length} transcript-sourced claims (${claims.filter((c) => c.category === "guidance").length} guidance, ${claims.filter((c) => c.category === "expansion_flag").length} flags, ${claims.filter((c) => c.category === "about").length} about)`);
 
-  // ── call the verifier ──
+  // ── call the verifier, trying each INDEPENDENT candidate in turn ──
   const messages = buildVerifyMessages(report, transcript, claims);
-  let out, usage, model;
-  try {
-    log.step(`Calling ${V.provider} (structured outputs) to audit claims…`);
-    if (V.provider === "anthropic") ({ data: out, usage, model } = await callAnthropicStructured({ apiKey: V.key, model: V.model, messages, schema: VERIFY_JSON_SCHEMA, schemaName: "verify" }));
-    else ({ data: out, usage, model } = await callStructured({ apiKey: V.key, model: V.model, messages, schema: VERIFY_JSON_SCHEMA, schemaName: "verify" }));
-  } catch (e) {
-    // This pass is an INTERNAL quality tool — it adds nothing visible to the client report. When the
-    // provider itself is unavailable (out of credit, rate-limited, down), skipping the audit is far
-    // better than throwing away a complete, already-validated analysis: we record that it was
-    // skipped and let the run finish. A malformed request is still a real bug → fail loudly.
-    const providerDown = ["quota", "auth", "rate_limit", "server", "network"].includes(e.kind);
-    if (!providerDown) { log.err(`${V.provider} call failed: ${e.message}`); process.exitCode = 1; return; }
-    log.warn(`${V.provider} unavailable (${e.kind}: ${e.message.slice(0, 160)}) — SKIPPING the audit rather than failing the run`);
-    const audit = { slug, company: report.meta?.company || null, quarter: report.meta?.quarter || null, provider: V.provider, model: V.model, transcript_available: transcriptAvailable, checked: 0, skipped: `verifier unavailable (${e.kind})`, verdicts: [], dropped: [] };
-    await writeFile(join(dir, "verification.json"), JSON.stringify(audit, null, 2));
+  let out, usage, model, V = null, lastErr = null;
+  for (const cand of candidates) {
+    try {
+      log.step(`Calling ${cand.provider}/${cand.model} (${cand.independence}) to audit claims…`);
+      if (cand.provider === "anthropic") ({ data: out, usage, model } = await callAnthropicStructured({ apiKey: cand.key, model: cand.model, messages, schema: VERIFY_JSON_SCHEMA, schemaName: "verify" }));
+      else ({ data: out, usage, model } = await callStructured({ apiKey: cand.key, model: cand.model, messages, schema: VERIFY_JSON_SCHEMA, schemaName: "verify" }));
+      V = cand;
+      break;
+    } catch (e) {
+      lastErr = e;
+      // A malformed request is a real bug in OUR code and would fail on every candidate → fail loudly.
+      const providerDown = ["quota", "auth", "rate_limit", "server", "network"].includes(e.kind);
+      if (!providerDown) { log.err(`${cand.provider} call failed: ${e.message}`); process.exitCode = 1; return; }
+      log.warn(`${cand.provider}/${cand.model} unavailable (${e.kind}: ${e.message.slice(0, 140)})`);
+    }
+  }
+  if (!V) {
+    // Every independent verifier is down. This pass is an INTERNAL quality tool that adds nothing
+    // visible to the report, so skipping it beats discarding a complete, already-validated analysis.
+    const why = `every independent verifier unavailable (last: ${lastErr?.kind || "error"})`;
+    log.warn(`${why} — SKIPPING the audit rather than failing the run`);
+    await writeSkipped(why, null);
     return;
   }
   const cost = V.provider === "anthropic" ? estimateAnthropicCost(usage, model) : estimateCost(usage, model);

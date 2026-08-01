@@ -29,6 +29,7 @@
         "quarter_confirmed": { "type": "boolean", "description": "True when the quarter was verified against the transcript/PPT, not inferred." },
         "generated_at": { "type": "string", "format": "date-time", "description": "ISO-8601 timestamp the pipeline finished writing this report." },
         "transcript_available": { "type": "boolean", "description": "Whether a concall transcript was found. Downstream `source: 'Transcript'` facts require this to be true." },
+        "lender": { "type": "boolean", "description": "True for a bank/NBFC, where Screener's P&L reports Financing Profit / Financing Margin % instead of Operating Profit / OPM %. Borrowings are funding rather than leverage and interest is a cost of revenue, so EV, net debt and EV/EBITDA are not meaningful: the pipeline stores valuation.ev_ebitda as null and every renderer shows 'n.m.'. OPTIONAL and absent on reports generated before lender detection existed — readers must treat a missing value as false." },
         "sources": {
           "type": "object",
           "description": "Source links. All three keys must be present so link rendering has stable fields to read; use null when a link/date is unavailable.",

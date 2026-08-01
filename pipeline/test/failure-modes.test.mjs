@@ -165,7 +165,7 @@ hosts = [];
 globalThis.fetch = realFetch;
 
 // ── 4. the verifier must never be the model that produced the extraction ──
-const { chooseVerifier } = await import("../verify-extract.mjs");
+const { chooseVerifier, verifierCandidates } = await import("../verify-extract.mjs");
 const withEnv = (env, fn) => {
   const saved = { OPENAI_API_KEY: process.env.OPENAI_API_KEY, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY, VERIFY_MODEL: process.env.VERIFY_MODEL };
   for (const k of Object.keys(saved)) delete process.env[k];
@@ -197,6 +197,18 @@ const withEnv = (env, fn) => {
   const v = withEnv({ OPENAI_API_KEY: "o", ANTHROPIC_API_KEY: "a" }, () => chooseVerifier({}));
   ok(v?.provider === "anthropic", "a legacy report with no _step7.provider still audits cross-provider");
 }
+// A preferred-but-unreachable verifier must fall through to the next INDEPENDENT one rather than
+// silently dropping verification — so the candidate list carries more than the single best pick.
+{
+  const c = withEnv({ OPENAI_API_KEY: "o", ANTHROPIC_API_KEY: "a" }, () => verifierCandidates({ provider: "openai", model: "gpt-4.1" }));
+  ok(c.length === 2 && c[0].provider === "anthropic" && c[1].provider === "openai" && c[1].model === "gpt-4o",
+    "openai extraction offers a 2nd verifier (gpt-4o) if Anthropic is down, instead of skipping");
+  ok(c.every((x) => !(x.provider === "openai" && x.model === "gpt-4.1")), "no candidate is ever the extracting model");
+}
+{
+  const c = withEnv({ ANTHROPIC_API_KEY: "a" }, () => verifierCandidates({ provider: "anthropic", model: "claude-sonnet-5" }));
+  ok(c.length === 0, "nothing independent configured → empty candidate list (audit skipped)");
+}
 
 // ── 5. a lender's valuation prose must say EV/EBITDA doesn't apply ──
 const { buildSanityCheck } = await import("../lib/model.mjs");
@@ -211,6 +223,67 @@ const VAL = { market_cap_cr: 16220, ev_cr: 24420, pe: { fy27e: 13.2, fy28e: 11.1
 {
   const s = buildSanityCheck({ valuation: VAL, inputs: { cmp: 7689, net_debt_cr: 1272 }, currentPe: 40, richness: {}, positiveTone: true });
   ok(/EV\/EBITDA/.test(s) && !/not meaningful/i.test(s), "a normal company's prose is unchanged");
+}
+
+// ── 6. a provider proven dead stays dead for the rest of the run ──
+// Each workflow step is its own node process, so this has to survive via the workspace, or a hanging
+// primary gets re-probed (and its budget re-spent) by all five LLM steps inside one 20-minute job.
+{
+  const { markProviderUnhealthy, availableProviders } = await import("../lib/llm.mjs");
+  const { rmSync } = await import("node:fs");
+  const HEALTH = new URL("../out/.provider-health.json", import.meta.url);
+  rmSync(HEALTH, { force: true });
+  withEnv({ OPENAI_API_KEY: "o", ANTHROPIC_API_KEY: "a" }, () => {
+    ok(availableProviders().map((p) => p.provider).join(",") === "openai,anthropic", "both providers offered while healthy");
+    markProviderUnhealthy("openai", "quota: out of credit");
+    ok(availableProviders().map((p) => p.provider).join(",") === "anthropic", "a provider marked dead is skipped by later steps");
+  });
+  withEnv({ OPENAI_API_KEY: "o" }, () => {
+    ok(availableProviders().map((p) => p.provider).join(",") === "openai",
+      "…unless it is the only one left — a doomed attempt still yields the accurate error");
+  });
+  rmSync(HEALTH, { force: true });
+}
+{
+  // Budget exhaustion must be flagged as durable so callModel records it, not just this one call.
+  const { callStructured } = await import("../lib/openai.mjs");
+  globalThis.fetch = async () => res(429, JSON.stringify({ error: { code: "rate_limit_exceeded" } }));
+  let thrown = null;
+  try { await callStructured({ apiKey: "k", model: "m", messages: [], schema: {}, budgetMs: 50 }); } catch (e) { thrown = e; }
+  ok(thrown?.budgetSpent === true, "an exhausted budget marks the error durable (provider recorded dead)");
+  globalThis.fetch = realFetch;
+}
+
+// ── 7. EV/EBITDA is suppressed, not merely caveated ──
+const { assembleModel } = await import("../lib/model-assemble.mjs");
+const { computeModel } = await import("../../public/js/report.js");
+const { readFile } = await import("node:fs/promises");
+const F = (rel) => new URL(rel, import.meta.url);
+const REPORT_FIXTURE = JSON.parse(await readFile(F("../test-fixtures/report.step8.json"), "utf8"));
+const MODEL_LLM = JSON.parse(await readFile(F("../test-fixtures/model-response.json"), "utf8"));
+{
+  const base = JSON.parse(JSON.stringify(REPORT_FIXTURE));
+  const r = assembleModel(base, { revenue: 3218, ebitda: 1472, ebitda_margin_pct: 46, pat: 1099, net_margin_pct: 34.2, gross_margin_pct: null }, MODEL_LLM, null, { generated_at: "2026-08-01T00:00:00Z", lender: true });
+  ok(r.report.valuation.ev_ebitda.fy27e === null && r.report.valuation.ev_ebitda.fy28e === null,
+    "lender: EV/EBITDA stored as null so the UI and every exporter render 'n.m.'");
+  ok(r.warnings.some((w) => /lender/i.test(w)), "…and the suppression is warned about, not silent");
+  r.report.meta.lender = true;
+  const live = computeModel(r.report, { growth_fy27: 12, growth_fy28: 10, ebitda_margin_fy27: 46, ebitda_margin_fy28: 46, net_margin_fy27: 34, net_margin_fy28: 34 });
+  ok(live.valuation.ev_ebitda.fy27e === null, "…and editing a lever does NOT resurrect it in the frontend recompute");
+}
+{
+  // A dropped Operating Profit row on a NON-lender: the bundle still passes, but the multiple that
+  // would rest entirely on an unanchored margin guess is suppressed rather than published.
+  const base = JSON.parse(JSON.stringify(REPORT_FIXTURE));
+  const r = assembleModel(base, { revenue: 2023, ebitda: null, ebitda_margin_pct: null, pat: 364, net_margin_pct: 18, gross_margin_pct: null }, MODEL_LLM, null, { generated_at: "2026-08-01T00:00:00Z" });
+  ok(r.report.valuation.ev_ebitda.fy27e === null, "no FY26A EBITDA actual → EV/EBITDA suppressed as n.m.");
+  ok(r.warnings.some((w) => /EBITDA/i.test(w)), "…with a warning that says why");
+  ok(r.report.valuation.pe.fy27e !== null, "…while P/E, which is properly anchored, still publishes");
+}
+{
+  const base = JSON.parse(JSON.stringify(REPORT_FIXTURE));
+  const r = assembleModel(base, { revenue: 2023, ebitda: 580, ebitda_margin_pct: 29, pat: 364, net_margin_pct: 18, gross_margin_pct: null }, MODEL_LLM, null, { generated_at: "2026-08-01T00:00:00Z" });
+  ok(typeof r.report.valuation.ev_ebitda.fy27e === "number", "a normal company with a real EBITDA anchor still gets EV/EBITDA");
 }
 
 console.log(fails === 0 ? "\nFAILURE-MODE OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);
