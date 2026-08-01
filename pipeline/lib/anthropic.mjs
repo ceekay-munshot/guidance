@@ -54,43 +54,62 @@ function anthropicError(message, { status, body }) {
   return e;
 }
 
-/** One attempt. Throws a classified error on any failure. */
+/**
+ * One attempt. Throws a classified error on any failure.
+ *
+ * As in openai.mjs, the abort controller stays armed until the response BODY is consumed — `fetch()`
+ * resolves on headers, so clearing the timer there would let a mid-body stall hang past the
+ * per-provider budget and defeat the retry/failover machinery.
+ */
 async function attemptAnthropic({ apiKey, model, messages, schema, schemaName, temperature, maxTokens, timeoutMs }) {
   const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
   const turns = messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role, content: m.content }));
 
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  let res;
+  const timedOut = (what) => anthropicError(`Anthropic ${what} timed out after ${timeoutMs}ms`, { status: 0, body: "" });
   try {
-    res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
-      signal: ctrl.signal,
-      body: JSON.stringify({
-        model,
-        max_tokens: maxTokens,
-        temperature,
-        system,
-        messages: turns,
-        tools: [{ name: schemaName, description: "Return the result in this exact shape.", input_schema: schema }],
-        tool_choice: { type: "tool", name: schemaName },
-      }),
-    });
-  } catch (e) {
-    throw anthropicError(`Anthropic request failed: ${e.name === "AbortError" ? `timed out after ${timeoutMs}ms` : e.message}`, { status: 0, body: "" });
+    let res;
+    try {
+      res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          model,
+          max_tokens: maxTokens,
+          temperature,
+          system,
+          messages: turns,
+          tools: [{ name: schemaName, description: "Return the result in this exact shape.", input_schema: schema }],
+          tool_choice: { type: "tool", name: schemaName },
+        }),
+      });
+    } catch (e) {
+      if (e.name === "AbortError") throw timedOut("request");
+      throw anthropicError(`Anthropic request failed: ${e.message}`, { status: 0, body: "" });
+    }
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw anthropicError(`Anthropic HTTP ${res.status}: ${body.slice(0, 600)}`, { status: res.status, body });
+    }
+
+    let j;
+    try {
+      j = await res.json();
+    } catch (e) {
+      if (e.name === "AbortError") throw timedOut("response body");
+      throw anthropicError(`Anthropic returned an unreadable body: ${e.message}`, { status: 422, body: "" });
+    }
+
+    const toolUse = (j.content || []).find((b) => b.type === "tool_use");
+    if (!toolUse) throw anthropicError("Anthropic returned no tool_use block", { status: 422, body: "" });
+    const usage = { prompt_tokens: j.usage?.input_tokens || 0, completion_tokens: j.usage?.output_tokens || 0 };
+    return { data: toolUse.input, usage, model: j.model || model };
   } finally {
-    clearTimeout(t);
+    clearTimeout(t); // only now — the body is read (or the attempt has failed)
   }
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw anthropicError(`Anthropic HTTP ${res.status}: ${body.slice(0, 600)}`, { status: res.status, body });
-  }
-  const j = await res.json();
-  const toolUse = (j.content || []).find((b) => b.type === "tool_use");
-  if (!toolUse) throw anthropicError("Anthropic returned no tool_use block", { status: 422, body: "" });
-  const usage = { prompt_tokens: j.usage?.input_tokens || 0, completion_tokens: j.usage?.output_tokens || 0 };
-  return { data: toolUse.input, usage, model: j.model || model };
 }
 
 /** Estimate an Anthropic call's cost from token usage (same shape as openai.mjs → estimateCost). */

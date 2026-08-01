@@ -83,42 +83,66 @@ function llmError(message, { provider, status, body }) {
   return e;
 }
 
-/** One attempt. Throws a classified error (see llmError) on any failure. */
+/**
+ * One attempt. Throws a classified error (see llmError) on any failure.
+ *
+ * The abort controller stays armed until the response BODY has been consumed, not just until headers
+ * arrive. `fetch()` resolves on headers, so clearing the timer at that point would leave a provider
+ * that stalls mid-body to hang unbounded — outliving the per-provider budget and the retry/failover
+ * machinery entirely, until the workflow's own 20-minute ceiling killed the job.
+ */
 async function attemptStructured({ apiKey, model, messages, schema, schemaName, temperature, maxTokens, timeoutMs }) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  let res;
+  const timedOut = (what) => llmError(`OpenAI ${what} timed out after ${timeoutMs}ms`, { provider: "openai", status: 0, body: "" });
   try {
-    res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      signal: ctrl.signal,
-      body: JSON.stringify({
-        model,
-        temperature,
-        max_tokens: maxTokens,
-        messages,
-        response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema } },
-      }),
-    });
-  } catch (e) {
-    // Transport-level failure (DNS, reset, our own abort on timeout) — status 0 → retryable.
-    throw llmError(`OpenAI request failed: ${e.name === "AbortError" ? `timed out after ${timeoutMs}ms` : e.message}`, { provider: "openai", status: 0, body: "" });
+    let res;
+    try {
+      res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          model,
+          temperature,
+          max_tokens: maxTokens,
+          messages,
+          response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema } },
+        }),
+      });
+    } catch (e) {
+      // Transport-level failure (DNS, reset, our own abort on timeout) — status 0 → retryable.
+      if (e.name === "AbortError") throw timedOut("request");
+      throw llmError(`OpenAI request failed: ${e.message}`, { provider: "openai", status: 0, body: "" });
+    }
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw llmError(`OpenAI HTTP ${res.status}: ${body.slice(0, 600)}`, { provider: "openai", status: res.status, body });
+    }
+
+    let j;
+    try {
+      j = await res.json();
+    } catch (e) {
+      // A stalled body aborts here now that the timer outlives the headers → retryable, not a bug.
+      if (e.name === "AbortError") throw timedOut("response body");
+      throw llmError(`OpenAI returned an unreadable body: ${e.message}`, { provider: "openai", status: 422, body: "" });
+    }
+
+    const choice = j.choices?.[0];
+    // Content-level problems are OUR request's fault (prompt/schema/token budget) — not retryable.
+    if (choice?.message?.refusal) throw llmError(`model refusal: ${choice.message.refusal}`, { provider: "openai", status: 422, body: "" });
+    if (choice?.finish_reason === "length") throw llmError("model output truncated (raise maxTokens)", { provider: "openai", status: 422, body: "" });
+    const content = choice?.message?.content;
+    if (!content) throw llmError("empty model response", { provider: "openai", status: 422, body: "" });
+    let data;
+    try { data = JSON.parse(content); }
+    catch (e) { throw llmError(`model returned unparseable JSON: ${e.message}`, { provider: "openai", status: 422, body: "" }); }
+    return { data, usage: j.usage || {}, model: j.model || model };
   } finally {
-    clearTimeout(t);
+    clearTimeout(t); // only now — the body is read (or the attempt has failed)
   }
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw llmError(`OpenAI HTTP ${res.status}: ${body.slice(0, 600)}`, { provider: "openai", status: res.status, body });
-  }
-  const j = await res.json();
-  const choice = j.choices?.[0];
-  // Content-level problems are OUR request's fault (prompt/schema/token budget) — not retryable.
-  if (choice?.message?.refusal) throw llmError(`model refusal: ${choice.message.refusal}`, { provider: "openai", status: 422, body: "" });
-  if (choice?.finish_reason === "length") throw llmError("model output truncated (raise maxTokens)", { provider: "openai", status: 422, body: "" });
-  const content = choice?.message?.content;
-  if (!content) throw llmError("empty model response", { provider: "openai", status: 422, body: "" });
-  return { data: JSON.parse(content), usage: j.usage || {}, model: j.model || model };
 }
 
 /**

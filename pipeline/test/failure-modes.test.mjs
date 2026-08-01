@@ -338,5 +338,35 @@ const MODEL_LLM = JSON.parse(await readFile(F("../test-fixtures/model-response.j
   ok(c.length === 0, "…but a dated suffix is still normalised away, so gpt-4.1 never audits itself");
 }
 
+// ── 9. a provider that stalls MID-BODY must still time out ──
+// fetch() resolves on headers, so a timer cleared at that point leaves body consumption unguarded —
+// the exact hang the per-provider budget exists to prevent. The stub below sends headers instantly
+// and never resolves the body; the attempt must abort rather than hang.
+{
+  const { callStructured } = await import("../lib/openai.mjs");
+  globalThis.fetch = async (_url, opts) => ({
+    ok: true,
+    status: 200,
+    // Never resolves on its own — only the abort signal can end this.
+    json: () => new Promise((_resolve, reject) => {
+      opts.signal.addEventListener("abort", () => {
+        const e = new Error("aborted"); e.name = "AbortError"; reject(e);
+      });
+    }),
+    text: async () => "",
+  });
+  const started = Date.now();
+  let thrown = null;
+  try {
+    await callStructured({ apiKey: "k", model: "m", messages: [], schema: {}, timeoutMs: 300, budgetMs: 400, retries: 0 });
+  } catch (e) { thrown = e; }
+  const elapsed = Date.now() - started;
+  ok(thrown !== null, "a stalled response body aborts instead of hanging forever");
+  ok(/timed out/i.test(thrown?.message || "") && /body/i.test(thrown?.message || ""), "…and the error names the response body as what timed out");
+  ok(thrown?.retryable === true, "…and it is retryable, so retry + failover still apply");
+  ok(elapsed < 3000, `…and it happens on the timeout, not the job ceiling (${elapsed}ms)`);
+  globalThis.fetch = realFetch;
+}
+
 console.log(fails === 0 ? "\nFAILURE-MODE OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);
 process.exit(fails ? 1 : 0);
