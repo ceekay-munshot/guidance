@@ -103,6 +103,18 @@ export function isProviderHealthy(provider) {
 const isDurable = (e) => e.kind === "quota" || e.kind === "auth" || !!e.budgetSpent;
 
 /**
+ * Record a failure against provider health IF it was durable. Anything that calls a provider
+ * OUTSIDE callModel — the Step 8b verifier has its own candidate loop — must route failures through
+ * here, or it discovers an outage and keeps the knowledge to itself while later steps re-pay the
+ * full budget rediscovering it. Returns true when the provider was marked dead.
+ */
+export function noteProviderFailure(provider, err) {
+  if (!isDurable(err)) return false;
+  markProviderUnhealthy(provider, `${err.kind}: ${String(err.message || "").slice(0, 160)}`);
+  return true;
+}
+
+/**
  * The providers this run can use, in preference order. OpenAI stays primary (it is what every prompt
  * was tuned against); Anthropic is the standby. Providers already proven dead this run are dropped.
  */
@@ -155,10 +167,7 @@ export async function callModel({ messages, schema, schemaName, maxTokens = 8000
       lastErr = e;
       // Out of credit / bad key / burned its whole budget → don't make the next four steps
       // rediscover that at 90s a piece.
-      if (isDurable(e)) {
-        markProviderUnhealthy(p.provider, `${e.kind}: ${e.message.slice(0, 160)}`);
-        log.warn(`${p.provider} marked unhealthy for the rest of this run (${e.kind})`);
-      }
+      if (noteProviderFailure(p.provider, e)) log.warn(`${p.provider} marked unhealthy for the rest of this run (${e.kind})`);
       const next = providers[i + 1];
       if (next && FAILOVER_KINDS.has(e.kind)) {
         log.warn(`${p.provider} unavailable (${e.kind}): ${e.message.slice(0, 200)}`);

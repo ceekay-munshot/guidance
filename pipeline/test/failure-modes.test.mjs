@@ -438,5 +438,39 @@ const MODEL_LLM = JSON.parse(await readFile(F("../test-fixtures/model-response.j
   ok(dead.length === 0, "an already-dead OpenAI is NOT re-probed — the audit skips instead of burning a 2nd 90s budget");
 }
 
+// ── 12. consequences of the lender relabel, and the health marker's remaining hole ──
+{
+  // net_debt_cr is borrowings MINUS cash wherever Screener reports cash, so calling it "Borrowings"
+  // would overstate it. The label must stay accurate about the netting.
+  const { reportContent } = await import("../../public/js/export.js");
+  const rep = JSON.parse(JSON.stringify(REPORT_FIXTURE));
+  rep.meta.lender = true;
+  const c = reportContent(rep);
+  const label = c.lender ? "Net borrowings" : "Net debt";
+  ok(label === "Net borrowings", "a lender's funding line is labelled 'Net borrowings' — not 'Borrowings' (it is net of cash)");
+  ok(!/^Borrowings$/.test(label), "…so the label never claims a gross figure");
+}
+{
+  // The frontend badge keywords must match the backend's guidedFor() calls, or a lender's
+  // "financing margin" guidance is badged Est. in the UI while the report text calls it guided.
+  const src = await readFile(new URL("../../public/js/report.js", import.meta.url), "utf8");
+  ok(/leverBasis\(report, \["ebitda", "margin"\]\)/.test(src), "margin lever basis uses the same keywords as guidedFor(['ebitda','margin'])");
+  ok(/leverBasis\(report, \["revenue", "growth"\]\)/.test(src), "growth lever basis matches guidedFor(['revenue','growth'])");
+  ok(/lender \? "Financing margin" : "EBITDA margin"/.test(src), "the margin LEVER is relabelled for lenders, matching its row");
+}
+{
+  // The verifier calls providers outside callModel, so it must report durable failures to the shared
+  // marker — otherwise Model and Finalize each re-pay a full budget rediscovering the same outage.
+  const { noteProviderFailure, isProviderHealthy, clearProviderHealth } = await import("../lib/llm.mjs");
+  clearProviderHealth();
+  ok(noteProviderFailure("openai", { kind: "rate_limit", message: "slow down" }) === false, "a transient verifier failure is NOT held against the provider");
+  ok(isProviderHealthy("openai"), "…so it stays available to later steps");
+  ok(noteProviderFailure("openai", { kind: "quota", message: "no credits" }) === true, "an out-of-credit verifier failure IS recorded");
+  ok(!isProviderHealthy("openai"), "…so Model and Finalize skip it instead of rediscovering it");
+  clearProviderHealth();
+  ok(noteProviderFailure("anthropic", { kind: "network", message: "hang", budgetSpent: true }) === true, "a verifier that burned its whole budget marks the provider dead too");
+  clearProviderHealth();
+}
+
 console.log(fails === 0 ? "\nFAILURE-MODE OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);
 process.exit(fails ? 1 : 0);

@@ -138,7 +138,7 @@ function headerStrip(report) {
     <div class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm">
       ${stat("CMP", rupees(i.cmp))}
       ${stat("Mkt cap", rupeesCr(i.market_cap_cr))}
-      ${stat(m.lender ? "Borrowings" : "Net debt", rupeesCr(i.net_debt_cr))}
+      ${stat(m.lender ? "Net borrowings" : "Net debt", rupeesCr(i.net_debt_cr))}
     </div>
   </section>`;
 }
@@ -693,7 +693,12 @@ export function displayModel(report, current, seed) {
   };
 }
 
-/** [mgmt guidance] vs [Est.] basis tag — derived from whether management guided the metric on the call. */
+/**
+ * [mgmt guidance] vs [Est.] basis tag — derived from whether management guided the metric on the call.
+ * The keyword sets MUST match pipeline/lib/model-assemble.mjs's guidedFor() calls, or the badge here
+ * disagrees with the basis text baked into the report: the margin lever uses ["ebitda","margin"], so
+ * a lender's "financing margin" guidance is recognised rather than mis-badged "Est.".
+ */
 function leverBasis(report, keywords) {
   const g = report.concall?.guidance ?? [];
   const hit = g.find(
@@ -772,8 +777,8 @@ function financialModelSection(report) {
         <h4 class="font-semibold text-slate-700">Assumptions <span class="font-normal text-slate-400 text-sm">— edit to re-model</span></h4>
       </div>
       <div class="divide-y divide-slate-100">
-        ${lever("Revenue growth", "growth_fy27", "growth_fy28", leverBasis(report, ["revenue"]))}
-        ${lever("EBITDA margin", "ebitda_margin_fy27", "ebitda_margin_fy28", leverBasis(report, ["ebitda"]))}
+        ${lever("Revenue growth", "growth_fy27", "growth_fy28", leverBasis(report, ["revenue", "growth"]))}
+        ${lever(report.meta?.lender ? "Financing margin" : "EBITDA margin", "ebitda_margin_fy27", "ebitda_margin_fy28", leverBasis(report, ["ebitda", "margin"]))}
         ${lever("Net margin", "net_margin_fy27", "net_margin_fy28", leverBasis(report, ["net margin"]))}
       </div>
       <div class="mt-3 space-y-1">${basisNotes}</div>

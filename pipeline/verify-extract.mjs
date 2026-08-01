@@ -19,7 +19,7 @@ import { callStructured, estimateCost } from "./lib/openai.mjs";
 import { callAnthropicStructured, estimateAnthropicCost, DEFAULT_VERIFY_MODEL_ANTHROPIC } from "./lib/anthropic.mjs";
 import { VERIFY_JSON_SCHEMA } from "./lib/research-schema.mjs";
 import { buildClaims, buildVerifyMessages, applyVerification } from "./lib/verify.mjs";
-import { isProviderHealthy } from "./lib/llm.mjs";
+import { isProviderHealthy, noteProviderFailure } from "./lib/llm.mjs";
 import { findOutDir } from "./lib/out.mjs";
 import { log } from "./lib/util.mjs";
 
@@ -147,6 +147,10 @@ async function main() {
       // different model id, so a 400 is far more likely a wrong-model setting than a broken schema —
       // and the next candidate may well be fine. A genuinely malformed request simply fails on all of
       // them and lands in the skip below, logged loudly, rather than taking the run with it.
+      // The audit calls providers directly, so it owes the rest of the run what it learns: a durable
+      // failure here must reach the shared health marker, or Model and Finalize will each re-pay a
+      // full budget rediscovering the same dead provider.
+      if (noteProviderFailure(cand.provider, e)) log.warn(`${cand.provider} marked unhealthy for the rest of this run (${e.kind})`);
       const bug = !["quota", "auth", "rate_limit", "server", "network"].includes(e.kind);
       if (bug) log.err(`${cand.provider}/${cand.model} rejected the request (${e.kind}): ${e.message.slice(0, 200)}`);
       else log.warn(`${cand.provider}/${cand.model} unavailable (${e.kind}: ${e.message.slice(0, 140)})`);
