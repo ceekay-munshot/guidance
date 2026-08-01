@@ -322,5 +322,21 @@ const MODEL_LLM = JSON.parse(await readFile(F("../test-fixtures/model-response.j
   ok(typeof r.report.valuation.ev_ebitda.fy27e === "number", "a normal company with a real EBITDA anchor still gets EV/EBITDA");
 }
 
+// ── 8. classifier + model-id edges surfaced by review ──
+{
+  const c = classifyLlmError({ status: 408, body: "request timeout" });
+  ok(c.kind === "network" && c.retryable === true, "HTTP 408 is a transient timeout — retried and able to trigger failover");
+}
+{
+  // gpt-4.1-mini is a distinct model (it has its own price entry), so it must not read as gpt-4.1 —
+  // a loose prefix test made the verifier decline a perfectly good independent candidate.
+  const c = withEnv({ OPENAI_API_KEY: "o", VERIFY_MODEL: "gpt-4.1-mini" }, () => verifierCandidates({ provider: "openai", model: "gpt-4.1" }));
+  ok(c.length === 1 && c[0].model === "gpt-4.1-mini", "gpt-4.1-mini is a DIFFERENT model from gpt-4.1 — the audit runs");
+}
+{
+  const c = withEnv({ OPENAI_API_KEY: "o", VERIFY_MODEL: "gpt-4.1" }, () => verifierCandidates({ provider: "openai", model: "gpt-4.1-2025-04-14" }));
+  ok(c.length === 0, "…but a dated suffix is still normalised away, so gpt-4.1 never audits itself");
+}
+
 console.log(fails === 0 ? "\nFAILURE-MODE OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);
 process.exit(fails ? 1 : 0);

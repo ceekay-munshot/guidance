@@ -62,7 +62,9 @@ export function classifyLlmError({ provider = "openai", status = 0, body = "" } 
   if (status >= 500) {
     return { kind: "server", retryable: true, userMessage: `The ${provider} analysis provider is temporarily unavailable. Please try again shortly.` };
   }
-  if (status === 0) {
+  // 408 Request Timeout from the provider or an intermediary is a transient timeout, not a malformed
+  // request — it belongs with the retryable failures, and must also be able to trigger failover.
+  if (status === 0 || status === 408) {
     return { kind: "network", retryable: true, userMessage: "We couldn't reach our analysis provider. Please try again shortly." };
   }
   // 400/404/422 — our request is wrong (bad schema, unknown model). Retrying repeats the same mistake.

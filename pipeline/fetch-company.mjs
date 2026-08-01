@@ -188,6 +188,14 @@ async function main() {
     // ── 6. Assemble the bundle with provenance ──
     const src = resolved.screener_url;
     const prov = (source, note) => ({ source, fetched_at, ...(note ? { note } : {}) });
+    // Screener's own row label for a field, Title Cased for the note; falls back to the conventional
+    // name when the row wasn't found (the value is null in that case anyway).
+    const ACRONYMS = new Set(["opm", "pat", "ebitda", "cwip", "eps", "npm"]);
+    const rowName = (key, fallback) => {
+      const l = parsed.row_labels?.[key];
+      if (!l) return fallback;
+      return l.split(" ").map((w) => (ACRONYMS.has(w) ? w.toUpperCase() : w.replace(/^[a-z]/, (c) => c.toUpperCase()))).join(" ");
+    };
     bundle = {
       ok: false, // set by the self-check below
       query,
@@ -237,11 +245,14 @@ async function main() {
         cmp: prov(src, "Screener top-ratio 'Current Price'; cmp_date = fetch date (live price)"),
         shares_out_cr: prov(src, "derived: market_cap_cr / cmp"),
         market_cap_cr: prov(src, "Screener top-ratio 'Market Cap'"),
-        net_debt_cr: prov(src, inp.net_debt_note || "Screener balance sheet: borrowings − cash"),
-        revenue: prov(src, "Screener P&L, Mar-2026 column (Sales)"),
-        ebitda: prov(src, "Screener P&L, Mar-2026 column (Operating Profit)"),
-        ebitda_margin_pct: prov(src, "Screener P&L (OPM %)"),
-        pat: prov(src, "Screener P&L (Net Profit)"),
+        net_debt_cr: prov(src, inp.net_debt_note || `Screener balance sheet: ${rowName("borrowings", "borrowings")} − cash`),
+        // Name the row ACTUALLY matched — a lender's numbers come from "Financing Profit" /
+        // "Financing Margin %", and citing the manufacturer rows would make the retained bundle
+        // misleading to anyone auditing where a figure came from.
+        revenue: prov(src, `Screener P&L, Mar-2026 column (${rowName("revenue", "Sales")})`),
+        ebitda: prov(src, `Screener P&L, Mar-2026 column (${rowName("ebitda", "Operating Profit")})${parsed.lender ? " — a lender's operating line; not EBITDA in the usual sense" : ""}`),
+        ebitda_margin_pct: prov(src, `Screener P&L (${rowName("ebitda_margin_pct", "OPM %")})`),
+        pat: prov(src, `Screener P&L (${rowName("pat", "Net Profit")})`),
         net_margin_pct: prov(src, "derived: PAT / revenue"),
         gross_margin_pct: prov(src, "not reported by Screener — left null"),
         transcript_url: prov(src, "Screener Documents → Concalls (latest)"),

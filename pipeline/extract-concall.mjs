@@ -15,7 +15,7 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { estTokens } from "./lib/openai.mjs";
-import { callModel, estimateCostFor, reportLlmFailure, availableProviders } from "./lib/llm.mjs";
+import { callModel, estimateCostFor, reportLlmFailure, availableProviders, CONFIG_USER_MESSAGE } from "./lib/llm.mjs";
 import { EXTRACTION_JSON_SCHEMA } from "./lib/extract-schema.mjs";
 import { buildMessages, assembleReport, validateBC, verifyQuotes } from "./lib/extract-assemble.mjs";
 import { log } from "./lib/util.mjs";
@@ -50,12 +50,19 @@ async function findBundleDir(arg) {
 async function main() {
   const arg = (process.argv[2] || process.env.COMPANY || "").trim();
   log.step(`Munshot extract-concall — providers ${availableProviders().map((p) => `${p.provider}:${p.model}`).join(" → ") || "none"}`);
-  if (!availableProviders().length) { log.err("no LLM provider configured (OPENAI_API_KEY or ANTHROPIC_API_KEY) — cannot extract"); process.exitCode = 1; return; }
 
+  // Resolve the bundle BEFORE the provider check: a missing key is a knowable reason, and error.txt
+  // needs a directory to live in. Bailing first meant the client saw the generic catch-all for a
+  // failure we could name exactly.
   const found = await findBundleDir(arg);
   if (!found) { log.err(`no bundle found in pipeline/out/${arg ? ` for "${arg}"` : ""} — run fetch-company first`); process.exitCode = 1; return; }
   const { dir, slug, bundle } = found;
   log.ok(`bundle: ${bundle.meta?.company} (${bundle.meta?.ticker}) → ${dir}`);
+
+  if (!availableProviders().length) {
+    await reportLlmFailure(dir, "extraction", { kind: "config", message: "no LLM provider configured (set OPENAI_API_KEY or ANTHROPIC_API_KEY)", userMessage: CONFIG_USER_MESSAGE });
+    process.exitCode = 1; return;
+  }
 
   let transcript = await readFile(join(dir, "transcript.txt"), "utf8").catch(() => "");
   const pptText = await readFile(join(dir, "ppt.txt"), "utf8").catch(() => "");

@@ -12,7 +12,7 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_MODEL } from "./lib/openai.mjs";
-import { callModel, estimateCostFor, reportLlmFailure, availableProviders } from "./lib/llm.mjs";
+import { callModel, estimateCostFor, reportLlmFailure, availableProviders, CONFIG_USER_MESSAGE } from "./lib/llm.mjs";
 import { MODEL_JSON_SCHEMA } from "./lib/model-schema.mjs";
 import { buildModelMessages, assembleModel, validateEFG } from "./lib/model-assemble.mjs";
 import { findOutDir } from "./lib/out.mjs";
@@ -33,10 +33,16 @@ function isPositiveTone(report, conviction) {
 async function main() {
   const arg = (process.argv[2] || process.env.COMPANY || "").trim();
   log.step(`Munshot model-report (E + F + G) — model ${OPENAI_MODEL}`);
-  if (!availableProviders().length) { log.err("no LLM provider configured (OPENAI_API_KEY or ANTHROPIC_API_KEY) — cannot model"); process.exitCode = 1; return; }
 
   const found = await findOutDir(OUT_ROOT, arg);
   if (!found) { log.err(`no bundle found in pipeline/out/${arg ? ` for "${arg}"` : ""} — run fetch-company first`); process.exitCode = 1; return; }
+
+  // Checked AFTER the bundle is resolved so a missing key can be written to error.txt as a specific
+  // reason, rather than surfacing as the generic catch-all.
+  if (!availableProviders().length) {
+    await reportLlmFailure(found.dir, "model", { kind: "config", message: "no LLM provider configured (set OPENAI_API_KEY or ANTHROPIC_API_KEY)", userMessage: CONFIG_USER_MESSAGE });
+    process.exitCode = 1; return;
+  }
   const { dir, slug, bundle } = found;
 
   let report;

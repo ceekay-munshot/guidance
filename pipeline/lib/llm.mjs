@@ -26,6 +26,9 @@ import { callStructured, estimateCost, DEFAULT_MODEL } from "./openai.mjs";
 import { callAnthropicStructured, estimateAnthropicCost } from "./anthropic.mjs";
 import { log } from "./util.mjs";
 
+/** Client-facing reason when NO provider key is configured at all. */
+export const CONFIG_USER_MESSAGE = "Our analysis engine isn't configured. Please try again shortly.";
+
 /** Anthropic model used when it stands in for OpenAI on the main extraction steps. */
 export const DEFAULT_FALLBACK_MODEL_ANTHROPIC = "claude-sonnet-5";
 
@@ -123,7 +126,7 @@ export async function callModel({ messages, schema, schemaName, maxTokens = 8000
   if (!providers.length) {
     const e = new Error("no LLM provider configured — set OPENAI_API_KEY (or ANTHROPIC_API_KEY)");
     e.kind = "config";
-    e.userMessage = "Our analysis engine isn't configured. Please try again shortly.";
+    e.userMessage = CONFIG_USER_MESSAGE;
     throw e;
   }
 

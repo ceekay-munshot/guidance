@@ -25,8 +25,16 @@ import { log } from "./lib/util.mjs";
 const OUT_ROOT = fileURLToPath(new URL("./out/", import.meta.url));
 const DEFAULT_VERIFY_MODEL = "gpt-4o"; // OpenAI, deliberately a DIFFERENT model than extraction's gpt-4.1
 
-/** Two model ids name the same model (allowing for dated suffixes like gpt-4.1-2025-04-14). */
-const sameModel = (a, b) => !!a && !!b && (String(a).startsWith(String(b)) || String(b).startsWith(String(a)));
+/**
+ * Canonical model id: lower-cased, with only a DATED release suffix removed (`-2025-04-14`,
+ * `-20251001`). A loose prefix test would read `gpt-4.1-mini` as the same model as `gpt-4.1` —
+ * they're separate models, and treating them as one made the verifier decline a perfectly good
+ * independent candidate and skip the audit.
+ */
+const canonicalModel = (m) => String(m || "").trim().toLowerCase().replace(/-\d{4}-\d{2}-\d{2}$/, "").replace(/-\d{8}$/, "");
+
+/** Two ids name the same model once dated suffixes are normalised away. */
+const sameModel = (a, b) => !!a && !!b && canonicalModel(a) === canonicalModel(b);
 
 /**
  * Every verifier that is independent of the extractor, best first:
