@@ -48,7 +48,7 @@ export function buildModelMessages(report, fy26a, ctx, { lender = false } = {}) 
     `COMPANY: ${m.company} (${m.ticker})   QUARTER: ${m.quarter}`,
     `FY26A (₹cr): revenue ${numOr(fy26a.revenue, "?")}, ${lender ? "financing profit" : "EBITDA"} ${numOr(fy26a.ebitda, "?")} (margin ${numOr(fy26a.ebitda_margin_pct, "?")}%), PAT ${numOr(fy26a.pat, "?")} (net margin ${numOr(fy26a.net_margin_pct, "?")}%), gross margin ${fy26a.gross_margin_pct == null ? "not reported" : fy26a.gross_margin_pct + "%"}`,
     lender
-      ? `Price inputs: CMP ₹${m.inputs?.cmp}, shares ${m.inputs?.shares_out_cr}cr (borrowings ₹${m.inputs?.net_debt_cr}cr — funding, not leverage; ignore for valuation)`
+      ? `Price inputs: CMP ₹${m.inputs?.cmp}, shares ${m.inputs?.shares_out_cr}cr (net borrowings ₹${m.inputs?.net_debt_cr}cr — funding, not leverage; ignore for valuation)`
       : `Price inputs: CMP ₹${m.inputs?.cmp}, shares ${m.inputs?.shares_out_cr}cr, net debt ₹${m.inputs?.net_debt_cr}cr`,
     ctx ? `Valuation context (Screener): current P/E ${numOr(ctx.current_pe, "n/a")}, 5-yr median P/E ${numOr(ctx.hist_median_pe, "n/a")}, peer median P/E ${numOr(ctx.peer_median_pe, "n/a")}` : `Valuation context: unavailable`,
     ``,

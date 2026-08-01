@@ -472,5 +472,42 @@ const MODEL_LLM = JSON.parse(await readFile(F("../test-fixtures/model-response.j
   clearProviderHealth();
 }
 
+// ── 13. a body that breaks mid-stream is transport, not a bad request ──
+// A reset or truncated body rejects with TypeError/SyntaxError, never AbortError — so the previous
+// AbortError-only check sent it to the non-retryable 422 branch and neither retried nor failed over.
+{
+  const { callStructured } = await import("../lib/openai.mjs");
+  for (const [label, err] of [
+    ["connection reset", Object.assign(new TypeError("terminated"), {})],
+    ["truncated JSON", new SyntaxError("Unexpected end of JSON input")],
+  ]) {
+    let attempts = 0;
+    globalThis.fetch = async () => ({
+      ok: true, status: 200, text: async () => "",
+      json: async () => { attempts++; if (attempts === 1) throw err; return { choices: [{ message: { content: '{"ok":true}' }, finish_reason: "stop" }], usage: {}, model: "gpt-4.1" }; },
+    });
+    const r = await callStructured({ apiKey: "k", model: "m", messages: [], schema: {} });
+    ok(attempts === 2 && r.data.ok === true, `${label} mid-body is retried and recovers`);
+  }
+  // …while content we DID read and can't accept stays non-retryable.
+  globalThis.fetch = async () => ({
+    ok: true, status: 200, text: async () => "",
+    json: async () => ({ choices: [{ message: { content: "not json at all" }, finish_reason: "stop" }], usage: {}, model: "gpt-4.1" }),
+  });
+  let thrown = null;
+  try { await callStructured({ apiKey: "k", model: "m", messages: [], schema: {} }); } catch (e) { thrown = e; }
+  ok(thrown?.kind === "bad_request" && thrown?.retryable === false, "unparseable MODEL CONTENT is still non-retryable (our bug, not the network's)");
+  globalThis.fetch = realFetch;
+}
+{
+  // Web-search tokens are OpenAI's even when the structured call failed over to Anthropic.
+  const { estimateCost } = await import("../lib/openai.mjs");
+  const usage = { prompt_tokens: 100000, completion_tokens: 10000 };
+  const wrong = estimateCost(usage, "claude-sonnet-5");   // what pricing by the answering model gave
+  const right = estimateCost(usage, "gpt-4o-mini");        // what OPENAI_MODEL actually cost
+  ok(wrong.priced_as !== right.priced_as && wrong.usd > right.usd,
+    "pricing web search by the answering model overstates it — hence pricing by OPENAI_MODEL");
+}
+
 console.log(fails === 0 ? "\nFAILURE-MODE OFFLINE TESTS OK" : `\n${fails} FAILURE(S)`);
 process.exit(fails ? 1 : 0);

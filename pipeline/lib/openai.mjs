@@ -125,9 +125,12 @@ async function attemptStructured({ apiKey, model, messages, schema, schemaName, 
     try {
       j = await res.json();
     } catch (e) {
-      // A stalled body aborts here now that the timer outlives the headers → retryable, not a bug.
+      // We already have 2xx headers, so the REQUEST was fine — any failure to obtain the body is a
+      // transport problem: our abort on a stall (AbortError), a reset or truncated stream
+      // (TypeError "terminated"), or partial JSON (SyntaxError). All are transient → status 0, so
+      // they retry and can trigger failover. Only content we DID read and can't accept stays 422.
       if (e.name === "AbortError") throw timedOut("response body");
-      throw llmError(`OpenAI returned an unreadable body: ${e.message}`, { provider: "openai", status: 422, body: "" });
+      throw llmError(`OpenAI response body failed mid-stream: ${e.name}: ${e.message}`, { provider: "openai", status: 0, body: "" });
     }
 
     const choice = j.choices?.[0];

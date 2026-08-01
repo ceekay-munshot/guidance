@@ -69,7 +69,10 @@ async function main() {
     await reportLlmFailure(dir, "research", e); process.exitCode = 1; return;
   }
   const cost = estimateCostFor(provider, usage, model);
-  const webCost = estimateCost({ prompt_tokens: web.usage.input_tokens, completion_tokens: web.usage.output_tokens }, model);
+  // Price the web-search tokens against the model that actually produced them. `model` above is
+  // whoever answered the STRUCTURED call, which may be Anthropic after a failover — pricing OpenAI
+  // web-search usage with a Claude id silently falls back to default rates and misstates the cost.
+  const webCost = estimateCost({ prompt_tokens: web.usage.input_tokens, completion_tokens: web.usage.output_tokens }, OPENAI_MODEL);
   log.ok(`extracted: ${llm.risks?.length || 0} risks · ${llm.thesis?.length || 0} thesis · ${llm.anti_thesis?.length || 0} anti-thesis`);
   log.info(`tokens: research in ${cost.inTok}/out ${cost.outTok} + web in ${webCost.inTok}/out ${webCost.outTok} · est. cost $${(cost.usd + webCost.usd).toFixed(4)} (priced as ${cost.priced_as})`);
 

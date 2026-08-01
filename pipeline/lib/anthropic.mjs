@@ -99,8 +99,10 @@ async function attemptAnthropic({ apiKey, model, messages, schema, schemaName, t
     try {
       j = await res.json();
     } catch (e) {
+      // 2xx headers already received — a body that never arrives intact is transport, not a bad
+      // request. Mirrors openai.mjs: status 0 → retryable and failover-eligible.
       if (e.name === "AbortError") throw timedOut("response body");
-      throw anthropicError(`Anthropic returned an unreadable body: ${e.message}`, { status: 422, body: "" });
+      throw anthropicError(`Anthropic response body failed mid-stream: ${e.name}: ${e.message}`, { status: 0, body: "" });
     }
 
     const toolUse = (j.content || []).find((b) => b.type === "tool_use");
