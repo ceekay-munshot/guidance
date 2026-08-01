@@ -4,23 +4,24 @@
 // with structured outputs to extract report Sections B + C.1–C.5, C.7, C.8, and writes/augments
 // pipeline/out/<slug>/report.json. C.6 risks stay []; D/E/F/G are later steps. No schema change.
 //
-//   node pipeline/extract-concall.mjs "Navin Fluorine"   (needs OPENAI_API_KEY)
+//   node pipeline/extract-concall.mjs "Navin Fluorine"   (needs OPENAI_API_KEY or ANTHROPIC_API_KEY)
 //
-// Model is one swappable constant (OPENAI_MODEL env, default gpt-4.1). Deterministic (temp 0.1),
+// Model is one swappable constant (OPENAI_MODEL env, default gpt-4.1); lib/llm.mjs retries transient
+// provider failures and fails over to ANTHROPIC_API_KEY when set. Deterministic (temp 0.1),
 // cost-logged. Degrades gracefully; never fabricates.
 
 import { readFile, writeFile, readdir } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callStructured, estimateCost, estTokens, DEFAULT_MODEL } from "./lib/openai.mjs";
+import { estTokens } from "./lib/openai.mjs";
+import { callModel, estimateCostFor, reportLlmFailure, availableProviders } from "./lib/llm.mjs";
 import { EXTRACTION_JSON_SCHEMA } from "./lib/extract-schema.mjs";
 import { buildMessages, assembleReport, validateBC, verifyQuotes } from "./lib/extract-assemble.mjs";
 import { log } from "./lib/util.mjs";
 
 const OUT_ROOT = fileURLToPath(new URL("./out/", import.meta.url));
 const SCHEMA_PATH = fileURLToPath(new URL("../public/data/report.schema.json", import.meta.url));
-const OPENAI_MODEL = process.env.OPENAI_MODEL || DEFAULT_MODEL;
 const MAX_CHARS = 800000; // generous guard (~200k tokens); real transcripts are ~50k chars
 
 async function findBundleDir(arg) {
@@ -48,9 +49,8 @@ async function findBundleDir(arg) {
 
 async function main() {
   const arg = (process.argv[2] || process.env.COMPANY || "").trim();
-  const apiKey = process.env.OPENAI_API_KEY;
-  log.step(`Munshot extract-concall — model ${OPENAI_MODEL}`);
-  if (!apiKey) { log.err("OPENAI_API_KEY missing — cannot extract"); process.exitCode = 1; return; }
+  log.step(`Munshot extract-concall — providers ${availableProviders().map((p) => `${p.provider}:${p.model}`).join(" → ") || "none"}`);
+  if (!availableProviders().length) { log.err("no LLM provider configured (OPENAI_API_KEY or ANTHROPIC_API_KEY) — cannot extract"); process.exitCode = 1; return; }
 
   const found = await findBundleDir(arg);
   if (!found) { log.err(`no bundle found in pipeline/out/${arg ? ` for "${arg}"` : ""} — run fetch-company first`); process.exitCode = 1; return; }
@@ -72,16 +72,15 @@ async function main() {
 
   // ── call OpenAI (structured outputs) ──
   const messages = buildMessages(bundle, pptOnly ? "" : transcript, pptText, { pptOnly });
-  let llm, usage, model;
+  let llm, usage, model, provider;
   try {
-    log.step("Calling OpenAI (structured outputs)…");
-    ({ data: llm, usage, model } = await callStructured({ apiKey, model: OPENAI_MODEL, messages, schema: EXTRACTION_JSON_SCHEMA, schemaName: "concall_extract" }));
+    ({ data: llm, usage, model, provider } = await callModel({ messages, schema: EXTRACTION_JSON_SCHEMA, schemaName: "concall_extract", purpose: "Section B + C extraction" }));
   } catch (e) {
-    log.err(`OpenAI call failed: ${e.message}`);
+    await reportLlmFailure(dir, "extraction", e);
     process.exitCode = 1;
     return;
   }
-  const cost = estimateCost(usage, model);
+  const cost = estimateCostFor(provider, usage, model);
   log.ok(`extracted: ${llm.concall?.guidance?.length || 0} guidance · ${llm.concall?.themes?.length || 0} themes · ${llm.concall?.thesis_triggers?.length || 0} triggers · ${llm.concall?.classification?.length || 0} tags`);
   log.info(`tokens: in ${cost.inTok} / out ${cost.outTok} · est. cost $${cost.usd.toFixed(4)} (priced as ${cost.priced_as})`);
 
@@ -98,7 +97,7 @@ async function main() {
   // ── validate B + C against report.schema.json ──
   const schema = JSON.parse(await readFile(SCHEMA_PATH, "utf8"));
   const v = validateBC(report, schema);
-  report._step7 = { model, tokens: { in: cost.inTok, out: cost.outTok }, est_cost_usd: Number(cost.usd.toFixed(4)), ppt_only: pptOnly, validated: v.ok, extracted_at: report.meta.generated_at };
+  report._step7 = { provider, model, tokens: { in: cost.inTok, out: cost.outTok }, est_cost_usd: Number(cost.usd.toFixed(4)), ppt_only: pptOnly, validated: v.ok, extracted_at: report.meta.generated_at };
 
   await writeFile(join(dir, "report.json"), JSON.stringify(report, null, 2));
   log.step(`Wrote ${join("pipeline/out", slug, "report.json")}`);

@@ -11,7 +11,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callStructured, estimateCost, DEFAULT_MODEL } from "./lib/openai.mjs";
+import { DEFAULT_MODEL } from "./lib/openai.mjs";
+import { callModel, estimateCostFor, reportLlmFailure, availableProviders } from "./lib/llm.mjs";
 import { TAKEAWAYS_JSON_SCHEMA } from "./lib/model-schema.mjs";
 import { buildFinalizeMessages, assembleKeyTakeaways, validateFull, stripInternal } from "./lib/model-assemble.mjs";
 import { salvageReport } from "./lib/salvage.mjs";
@@ -24,9 +25,8 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || DEFAULT_MODEL;
 
 async function main() {
   const arg = (process.argv[2] || process.env.COMPANY || "").trim();
-  const apiKey = process.env.OPENAI_API_KEY;
   log.step(`Munshot finalize-report (key_takeaways + end-to-end validation) — model ${OPENAI_MODEL}`);
-  if (!apiKey) { log.err("OPENAI_API_KEY missing — cannot finalize"); process.exitCode = 1; return; }
+  if (!availableProviders().length) { log.err("no LLM provider configured (OPENAI_API_KEY or ANTHROPIC_API_KEY) — cannot finalize"); process.exitCode = 1; return; }
 
   const found = await findOutDir(OUT_ROOT, arg);
   if (!found) { log.err(`no bundle found in pipeline/out/${arg ? ` for "${arg}"` : ""} — run fetch-company first`); process.exitCode = 1; return; }
@@ -53,21 +53,20 @@ async function main() {
 
   // ── key_takeaways synthesis (across the SALVAGED B–G) ──
   const messages = buildFinalizeMessages(body);
-  let llm, usage, model;
+  let llm, usage, model, provider;
   try {
-    log.step("Calling OpenAI (structured outputs) for key_takeaways…");
-    ({ data: llm, usage, model } = await callStructured({ apiKey, model: OPENAI_MODEL, messages, schema: TAKEAWAYS_JSON_SCHEMA, schemaName: "key_takeaways" }));
+    ({ data: llm, usage, model, provider } = await callModel({ messages, schema: TAKEAWAYS_JSON_SCHEMA, schemaName: "key_takeaways", purpose: "the key takeaways" }));
   } catch (e) {
-    log.err(`OpenAI call failed: ${e.message}`); process.exitCode = 1; return;
+    await reportLlmFailure(dir, "finalize", e); process.exitCode = 1; return;
   }
-  const cost = estimateCost(usage, model);
+  const cost = estimateCostFor(provider, usage, model);
   const { report: withTakeaways, warnings } = assembleKeyTakeaways(body, llm);
   warnings.forEach((w) => log.warn(w));
   log.ok(`${withTakeaways.key_takeaways.length} key takeaways`);
   log.info(`tokens: in ${cost.inTok} / out ${cost.outTok} · est. cost $${cost.usd.toFixed(4)} (priced as ${cost.priced_as})`);
 
   // ── validate the COMPLETE report end-to-end ──
-  withTakeaways._step9_finalize = { model, tokens: { in: cost.inTok, out: cost.outTok }, est_cost_usd: Number(cost.usd.toFixed(4)), finalized_at: new Date().toISOString() };
+  withTakeaways._step9_finalize = { provider, model, tokens: { in: cost.inTok, out: cost.outTok }, est_cost_usd: Number(cost.usd.toFixed(4)), finalized_at: new Date().toISOString() };
   const clean = stripInternal(withTakeaways); // the emitted report.json must be schema-clean
   const v = validateFull(clean, schema);
 

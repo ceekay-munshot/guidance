@@ -70,7 +70,16 @@ async function main() {
     if (V.provider === "anthropic") ({ data: out, usage, model } = await callAnthropicStructured({ apiKey: V.key, model: V.model, messages, schema: VERIFY_JSON_SCHEMA, schemaName: "verify" }));
     else ({ data: out, usage, model } = await callStructured({ apiKey: V.key, model: V.model, messages, schema: VERIFY_JSON_SCHEMA, schemaName: "verify" }));
   } catch (e) {
-    log.err(`${V.provider} call failed: ${e.message}`); process.exitCode = 1; return;
+    // This pass is an INTERNAL quality tool — it adds nothing visible to the client report. When the
+    // provider itself is unavailable (out of credit, rate-limited, down), skipping the audit is far
+    // better than throwing away a complete, already-validated analysis: we record that it was
+    // skipped and let the run finish. A malformed request is still a real bug → fail loudly.
+    const providerDown = ["quota", "auth", "rate_limit", "server", "network"].includes(e.kind);
+    if (!providerDown) { log.err(`${V.provider} call failed: ${e.message}`); process.exitCode = 1; return; }
+    log.warn(`${V.provider} unavailable (${e.kind}: ${e.message.slice(0, 160)}) — SKIPPING the audit rather than failing the run`);
+    const audit = { slug, company: report.meta?.company || null, quarter: report.meta?.quarter || null, provider: V.provider, model: V.model, transcript_available: transcriptAvailable, checked: 0, skipped: `verifier unavailable (${e.kind})`, verdicts: [], dropped: [] };
+    await writeFile(join(dir, "verification.json"), JSON.stringify(audit, null, 2));
+    return;
   }
   const cost = V.provider === "anthropic" ? estimateAnthropicCost(usage, model) : estimateCost(usage, model);
   log.ok(`${out.verdicts?.length || 0} verdicts returned`);

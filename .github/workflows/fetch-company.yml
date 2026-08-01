@@ -105,6 +105,7 @@ jobs:
           node pipeline/test/research.test.mjs
           node pipeline/test/model.test.mjs
           node pipeline/test/salvage.test.mjs
+          node pipeline/test/failure-modes.test.mjs
           node worker/test/worker.test.mjs
           node worker/test/analyze.test.mjs
           node worker/test/export.test.mjs
@@ -192,9 +193,13 @@ jobs:
         run: node pipeline/kv-put.mjs report "$SLUG"
 
       # Step 10/11: on ANY failure above, mark the job errored so the client stops polling and shows why.
+      # This string is only the LAST-RESORT fallback: every step that can fail for a knowable reason
+      # writes pipeline/out/<slug>/error.txt, which kv-put prefers. It deliberately no longer blames
+      # the source documents — that catch-all once told users a transcript was unavailable when the
+      # transcript had downloaded fine and the analysis provider was out of credit.
       - name: KV — mark error
         if: ${{ inputs.slug != '' && failure() }}
-        run: node pipeline/kv-put.mjs error "$SLUG" "We couldn't finish this analysis — a source (financials, transcript or deck) may have been temporarily unavailable. Please try again shortly."
+        run: node pipeline/kv-put.mjs error "$SLUG" "We couldn't finish this analysis. Please try again shortly."
 
       - name: Upload bundle artifact
         if: always()

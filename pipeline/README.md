@@ -40,7 +40,7 @@ internally-consistent example (valuation multiples reconcile to `meta.inputs` + 
 
 | Secret | Purpose |
 | --- | --- |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM providers for the analysis |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM providers for the analysis. OpenAI is primary; `ANTHROPIC_API_KEY` (optional) is both the cross-provider verifier and the failover for every LLM step |
 | `FIRECRAWL_API_KEY` | fetch transcripts / investor decks / web |
 | `CF_ACCOUNT_ID` | Cloudflare account id |
 | `CF_API_TOKEN` | token scoped to **Workers KV Storage: Edit** |

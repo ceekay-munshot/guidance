@@ -4,6 +4,7 @@
 
 import * as cheerio from "cheerio";
 import { parseNum, parseLooseDate } from "./util.mjs";
+import { PNL_LABELS, BS_LABELS, hasLabel, isLenderLayout, LENDER_NOTE, DEPOSITS_NOTE } from "./screener-labels.mjs";
 
 const BASE = "https://www.screener.in";
 
@@ -86,23 +87,28 @@ export function parseCompanyPage(html) {
   if (!cmp) notes.push("current price not found in top-ratios");
   if (!market_cap_cr) notes.push("market cap not found in top-ratios");
 
-  // P&L — FY26 = the "Mar 2026" column.
+  // P&L — FY26 = the "Mar 2026" column. Label needles live in screener-labels.mjs and cover BOTH
+  // Screener skeletons: "Operating Profit"/"OPM %" for a normal company and "Financing
+  // Profit"/"Financing Margin %" for a lender (bank/NBFC). See that file for why this matters.
   const pnl = readTable($, "profit-loss");
   const pcol = pnl ? columnIndexFor(pnl.headers, /mar\s*2026/i) : -1;
   if (pnl && pcol < 0) notes.push("no 'Mar 2026' column in P&L — FY26 actuals may be unreported");
-  const revenue = rowVal(pnl, ["sales", "revenue"], pcol);
-  const ebitda = rowVal(pnl, ["operating profit"], pcol);
-  const ebitda_margin_pct = rowVal(pnl, ["opm"], pcol);
-  const pat = rowVal(pnl, ["net profit"], pcol);
+  const lender = isLenderLayout(pnl ? pnl.rows.keys() : []);
+  const revenue = rowVal(pnl, PNL_LABELS.revenue, pcol);
+  const ebitda = rowVal(pnl, PNL_LABELS.ebitda, pcol);
+  const ebitda_margin_pct = rowVal(pnl, PNL_LABELS.ebitda_margin_pct, pcol);
+  const pat = rowVal(pnl, PNL_LABELS.pat, pcol);
   const net_margin_pct = pat != null && revenue ? (pat / revenue) * 100 : null;
   // Screener P&L has no gross margin line — leave null, never fabricate.
   const gross_margin_pct = null;
+  if (lender) notes.push(LENDER_NOTE);
 
   // Balance sheet — net debt = borrowings − cash (cash rarely on the condensed BS).
   const bs = readTable($, "balance-sheet");
   const bcol = bs ? columnIndexFor(bs.headers, /mar\s*2026/i) : -1;
-  const borrowings = rowVal(bs, ["borrowings"], bcol);
-  const cash = rowVal(bs, ["cash equivalents", "cash and bank", "cash & bank", "cash"], bcol);
+  const borrowings = rowVal(bs, BS_LABELS.borrowings, bcol);
+  const cash = rowVal(bs, BS_LABELS.cash, bcol);
+  if (bs && hasLabel(bs.rows.keys(), BS_LABELS.deposits)) notes.push(DEPOSITS_NOTE);
   let net_debt_cr = null;
   let net_debt_note = null;
   if (borrowings != null && cash != null) net_debt_cr = borrowings - cash;
@@ -117,7 +123,7 @@ export function parseCompanyPage(html) {
   const valuation_context = parseValuationContext($, ratios);
 
   return {
-    name, sector, sub_sector,
+    name, sector, sub_sector, lender,
     inputs: { cmp, cmp_date: null, shares_out_cr, market_cap_cr, net_debt_cr, net_debt_note, borrowings, cash },
     fy26a: { revenue, ebitda, ebitda_margin_pct, pat, net_margin_pct, gross_margin_pct },
     concalls,

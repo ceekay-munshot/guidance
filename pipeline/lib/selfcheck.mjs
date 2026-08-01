@@ -10,7 +10,13 @@ export function selfCheck(b, transcript, minChars = 2000) {
   for (const k of ["cmp", "shares_out_cr", "market_cap_cr"]) if (!finite(b.inputs?.[k])) problems.push(`inputs.${k} missing/non-finite`);
   if (typeof b.inputs?.cmp_date !== "string") problems.push("inputs.cmp_date missing");
   if (!finite(b.inputs?.net_debt_cr)) problems.push("inputs.net_debt_cr missing (note, not fatal)");
-  for (const k of ["revenue", "ebitda", "pat"]) if (!finite(b.fy26a?.[k])) problems.push(`fy26a.${k} missing/non-finite`);
+  for (const k of ["revenue", "pat"]) if (!finite(b.fy26a?.[k])) problems.push(`fy26a.${k} missing/non-finite`);
+  // EBITDA is a NOTE, not a blocker. Some companies genuinely have no operating-profit line we can
+  // read, and the report survives it: the schema types every financial cell as number|null and a
+  // non-positive denominator already renders as "n.m.". Hard-failing here meant one absent row
+  // replaced an otherwise complete analysis — built on a real transcript, real revenue and real
+  // PAT — with the generic "Couldn't complete the analysis" screen.
+  if (!finite(b.fy26a?.ebitda)) problems.push("fy26a.ebitda missing (note, not fatal — EV/EBITDA renders 'n.m.')");
 
   // consistency: market cap ≈ cmp × shares (within 2%)
   if (finite(b.inputs?.cmp) && finite(b.inputs?.shares_out_cr) && finite(b.inputs?.market_cap_cr)) {
@@ -26,7 +32,7 @@ export function selfCheck(b, transcript, minChars = 2000) {
   }
 
   // critical = required numbers present + a transcript that's either fetched or legitimately
-  // absent-with-reason. net_debt / consistency notes are warnings, not blockers.
-  const critical = problems.filter((p) => /inputs\.(cmp|shares_out|market_cap)|fy26a\.(revenue|ebitda|pat)|cmp_date|transcript/i.test(p));
+  // absent-with-reason. net_debt / EBITDA / consistency notes are warnings, not blockers.
+  const critical = problems.filter((p) => /inputs\.(cmp|shares_out|market_cap)|fy26a\.(revenue|pat)|cmp_date|transcript/i.test(p));
   return { ok: critical.length === 0, critical, problems };
 }

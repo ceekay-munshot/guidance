@@ -11,11 +11,62 @@ const PRICES = {
   "gpt-4o-mini": [0.15, 0.6],
 };
 
+/** Backoff before each retry of a TRANSIENT failure. Three retries ≈ 23s of waiting, worst case. */
+const RETRY_DELAYS_MS = [2000, 6000, 15000];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 /**
- * One structured-output completion. Returns { data, usage, model }.
- * Throws on HTTP error / model refusal / unparseable content.
+ * Classify a provider failure so callers can retry only what is worth retrying and tell the user the
+ * truth about the rest.
+ *
+ * The distinction that matters most is inside 429: it means either "slow down" (transient — retry) or
+ * "this account is out of credit" (permanent until someone tops it up). The pipeline used to collapse
+ * both into one opaque failure and report "a source (financials, transcript or deck) may have been
+ * temporarily unavailable", which sent people hunting for a transcript that had downloaded perfectly.
+ *
+ * → { kind, retryable, userMessage }
  */
-export async function callStructured({ apiKey, model, messages, schema, schemaName = "extract", temperature = 0.1, maxTokens = 8000, timeoutMs = 180000 }) {
+export function classifyLlmError({ provider = "openai", status = 0, body = "" } = {}) {
+  const text = String(body || "");
+  const outOfCredit = /insufficient_quota|credit_balance_exhausted|billing_not_active|no credits remaining|exceeded your current quota/i.test(text);
+
+  if (status === 429 && outOfCredit) {
+    return {
+      kind: "quota",
+      retryable: false, // no amount of waiting adds credit
+      userMessage: "Our analysis engine has hit its API usage limit. The company's financials and earnings documents were fetched fine — please try again shortly.",
+    };
+  }
+  if (status === 429) {
+    return { kind: "rate_limit", retryable: true, userMessage: "Our analysis engine is busy right now. Please try again in a few minutes." };
+  }
+  if (status === 401 || status === 403) {
+    return { kind: "auth", retryable: false, userMessage: "Our analysis engine is temporarily unavailable. Please try again shortly." };
+  }
+  if (status >= 500) {
+    return { kind: "server", retryable: true, userMessage: `The ${provider} analysis provider is temporarily unavailable. Please try again shortly.` };
+  }
+  if (status === 0) {
+    return { kind: "network", retryable: true, userMessage: "We couldn't reach our analysis provider. Please try again shortly." };
+  }
+  // 400/404/422 — our request is wrong (bad schema, unknown model). Retrying repeats the same mistake.
+  return { kind: "bad_request", retryable: false, userMessage: "We couldn't finish this analysis. Please try again shortly." };
+}
+
+/** An Error carrying the classification, so every caller can branch without re-parsing the message. */
+function llmError(message, { provider, status, body }) {
+  const c = classifyLlmError({ provider, status, body });
+  const e = new Error(message);
+  e.provider = provider;
+  e.status = status;
+  e.kind = c.kind;
+  e.retryable = c.retryable;
+  e.userMessage = c.userMessage;
+  return e;
+}
+
+/** One attempt. Throws a classified error (see llmError) on any failure. */
+async function attemptStructured({ apiKey, model, messages, schema, schemaName, temperature, maxTokens, timeoutMs }) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   let res;
@@ -32,17 +83,42 @@ export async function callStructured({ apiKey, model, messages, schema, schemaNa
         response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema } },
       }),
     });
+  } catch (e) {
+    // Transport-level failure (DNS, reset, our own abort on timeout) — status 0 → retryable.
+    throw llmError(`OpenAI request failed: ${e.name === "AbortError" ? `timed out after ${timeoutMs}ms` : e.message}`, { provider: "openai", status: 0, body: "" });
   } finally {
     clearTimeout(t);
   }
-  if (!res.ok) throw new Error(`OpenAI HTTP ${res.status}: ${(await res.text()).slice(0, 600)}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw llmError(`OpenAI HTTP ${res.status}: ${body.slice(0, 600)}`, { provider: "openai", status: res.status, body });
+  }
   const j = await res.json();
   const choice = j.choices?.[0];
-  if (choice?.message?.refusal) throw new Error(`model refusal: ${choice.message.refusal}`);
-  if (choice?.finish_reason === "length") throw new Error("model output truncated (raise maxTokens)");
+  // Content-level problems are OUR request's fault (prompt/schema/token budget) — not retryable.
+  if (choice?.message?.refusal) throw llmError(`model refusal: ${choice.message.refusal}`, { provider: "openai", status: 422, body: "" });
+  if (choice?.finish_reason === "length") throw llmError("model output truncated (raise maxTokens)", { provider: "openai", status: 422, body: "" });
   const content = choice?.message?.content;
-  if (!content) throw new Error("empty model response");
+  if (!content) throw llmError("empty model response", { provider: "openai", status: 422, body: "" });
   return { data: JSON.parse(content), usage: j.usage || {}, model: j.model || model };
+}
+
+/**
+ * One structured-output completion, retrying TRANSIENT failures (rate limit, 5xx, network) with
+ * backoff. Returns { data, usage, model }. Throws a classified error (`.kind`, `.retryable`,
+ * `.userMessage`) on model refusal / unparseable content / a failure worth surfacing.
+ */
+export async function callStructured({ apiKey, model, messages, schema, schemaName = "extract", temperature = 0.1, maxTokens = 8000, timeoutMs = 180000, retries = RETRY_DELAYS_MS.length, onRetry = null }) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await attemptStructured({ apiKey, model, messages, schema, schemaName, temperature, maxTokens, timeoutMs });
+    } catch (e) {
+      if (!e.retryable || attempt >= retries) throw e;
+      const wait = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
+      onRetry?.({ attempt: attempt + 1, of: retries, waitMs: wait, error: e });
+      await sleep(wait);
+    }
+  }
 }
 
 /** Estimate the call's cost from token usage. */

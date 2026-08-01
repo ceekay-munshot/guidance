@@ -11,7 +11,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callStructured, estimateCost, DEFAULT_MODEL } from "./lib/openai.mjs";
+import { DEFAULT_MODEL } from "./lib/openai.mjs";
+import { callModel, estimateCostFor, reportLlmFailure, availableProviders } from "./lib/llm.mjs";
 import { MODEL_JSON_SCHEMA } from "./lib/model-schema.mjs";
 import { buildModelMessages, assembleModel, validateEFG } from "./lib/model-assemble.mjs";
 import { findOutDir } from "./lib/out.mjs";
@@ -31,9 +32,8 @@ function isPositiveTone(report, conviction) {
 
 async function main() {
   const arg = (process.argv[2] || process.env.COMPANY || "").trim();
-  const apiKey = process.env.OPENAI_API_KEY;
   log.step(`Munshot model-report (E + F + G) — model ${OPENAI_MODEL}`);
-  if (!apiKey) { log.err("OPENAI_API_KEY missing — cannot model"); process.exitCode = 1; return; }
+  if (!availableProviders().length) { log.err("no LLM provider configured (OPENAI_API_KEY or ANTHROPIC_API_KEY) — cannot model"); process.exitCode = 1; return; }
 
   const found = await findOutDir(OUT_ROOT, arg);
   if (!found) { log.err(`no bundle found in pipeline/out/${arg ? ` for "${arg}"` : ""} — run fetch-company first`); process.exitCode = 1; return; }
@@ -49,14 +49,13 @@ async function main() {
 
   // ── model call (assumptions + prose only) ──
   const messages = buildModelMessages(report, fy26a, ctx, {});
-  let llm, usage, model;
+  let llm, usage, model, provider;
   try {
-    log.step("Calling OpenAI (structured outputs) for the model…");
-    ({ data: llm, usage, model } = await callStructured({ apiKey, model: OPENAI_MODEL, messages, schema: MODEL_JSON_SCHEMA, schemaName: "financial_model" }));
+    ({ data: llm, usage, model, provider } = await callModel({ messages, schema: MODEL_JSON_SCHEMA, schemaName: "financial_model", purpose: "the E/F/G model levers" }));
   } catch (e) {
-    log.err(`OpenAI call failed: ${e.message}`); process.exitCode = 1; return;
+    await reportLlmFailure(dir, "model", e); process.exitCode = 1; return;
   }
-  const cost = estimateCost(usage, model);
+  const cost = estimateCostFor(provider, usage, model);
   log.ok(`assumptions: growth ${llm.revenue_growth_fy27}/${llm.revenue_growth_fy28}% · EBITDA margin ${llm.ebitda_margin_fy27}/${llm.ebitda_margin_fy28}% · conviction ${llm.conviction}`);
   log.info(`tokens: in ${cost.inTok} / out ${cost.outTok} · est. cost $${cost.usd.toFixed(4)} (priced as ${cost.priced_as})`);
 
@@ -66,7 +65,7 @@ async function main() {
   warnings.forEach((w) => log.warn(w));
   const schema = JSON.parse(await readFile(SCHEMA_PATH, "utf8"));
   const v = validateEFG(merged, schema);
-  merged._step9_model = { model, tokens: { in: cost.inTok, out: cost.outTok }, est_cost_usd: Number(cost.usd.toFixed(4)), rich_vs_hist: richness.is_rich_vs_hist, rich_vs_peer: richness.is_rich_vs_peer, validated: v.ok, modeled_at: merged.meta.generated_at };
+  merged._step9_model = { provider, model, tokens: { in: cost.inTok, out: cost.outTok }, est_cost_usd: Number(cost.usd.toFixed(4)), rich_vs_hist: richness.is_rich_vs_hist, rich_vs_peer: richness.is_rich_vs_peer, validated: v.ok, modeled_at: merged.meta.generated_at };
 
   await writeFile(join(dir, "report.json"), JSON.stringify(merged, null, 2));
   log.step(`Wrote ${join("pipeline/out", slug, "report.json")}`);

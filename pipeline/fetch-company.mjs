@@ -118,6 +118,7 @@ async function main() {
     const inp = parsed.inputs;
     log.info(`CMP ₹${inp.cmp ?? "—"} · mktcap ₹${inp.market_cap_cr ?? "—"}cr · shares ${round(inp.shares_out_cr, 2) ?? "—"}cr · net debt ₹${round(inp.net_debt_cr, 0) ?? "—"}cr`);
     log.info(`FY26A: revenue ₹${parsed.fy26a.revenue ?? "—"}cr · EBITDA ₹${parsed.fy26a.ebitda ?? "—"}cr · PAT ₹${parsed.fy26a.pat ?? "—"}cr`);
+    if (parsed.lender) log.info("lender layout (bank/NBFC): EBITDA = Screener 'Financing Profit'; EV/EBITDA is not meaningful here");
 
     // ── quarter identification (never silently substitute an older quarter / annual report) ──
     const latest = parsed.concalls.entries[0] || null;
@@ -196,6 +197,10 @@ async function main() {
         quarter_confirmed,
         expected_quarter: expQ,
         transcript_available: effectiveTranscriptAvailable,
+        // Screener renders a lender (bank/NBFC) P&L differently — see lib/screener-labels.mjs. Kept
+        // on the bundle so later steps know EBITDA here is "Financing Profit" and that EV/EBITDA and
+        // net-debt multiples aren't meaningful for this company.
+        lender: !!parsed.lender,
       },
       // → report.schema.json meta.inputs
       inputs: {

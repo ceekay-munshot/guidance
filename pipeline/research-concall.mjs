@@ -13,7 +13,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callStructured, estimateCost, DEFAULT_MODEL } from "./lib/openai.mjs";
+import { estimateCost, DEFAULT_MODEL } from "./lib/openai.mjs";
+import { callModel, estimateCostFor, reportLlmFailure, availableProviders } from "./lib/llm.mjs";
 import { RISK_THESIS_JSON_SCHEMA } from "./lib/research-schema.mjs";
 import { buildRiskThesisMessages, assembleResearch, validateResearch } from "./lib/research-assemble.mjs";
 import { gatherWebContext, researchQueries } from "./lib/websearch.mjs";
@@ -29,7 +30,7 @@ async function main() {
   const apiKey = process.env.OPENAI_API_KEY;
   const firecrawlKey = process.env.FIRECRAWL_API_KEY;
   log.step(`Munshot research-concall (C.6 + D) — model ${OPENAI_MODEL}`);
-  if (!apiKey) { log.err("OPENAI_API_KEY missing — cannot research"); process.exitCode = 1; return; }
+  if (!availableProviders().length) { log.err("no LLM provider configured (OPENAI_API_KEY or ANTHROPIC_API_KEY) — cannot research"); process.exitCode = 1; return; }
 
   const found = await findOutDir(OUT_ROOT, arg);
   if (!found) { log.err(`no bundle found in pipeline/out/${arg ? ` for "${arg}"` : ""} — run fetch-company first`); process.exitCode = 1; return; }
@@ -49,14 +50,13 @@ async function main() {
 
   // ── structured risk + thesis extraction ──
   const messages = buildRiskThesisMessages(report, web, {});
-  let llm, usage, model;
+  let llm, usage, model, provider;
   try {
-    log.step("Calling OpenAI (structured outputs) for risks + thesis…");
-    ({ data: llm, usage, model } = await callStructured({ apiKey, model: OPENAI_MODEL, messages, schema: RISK_THESIS_JSON_SCHEMA, schemaName: "risk_thesis" }));
+    ({ data: llm, usage, model, provider } = await callModel({ messages, schema: RISK_THESIS_JSON_SCHEMA, schemaName: "risk_thesis", purpose: "C.6 risks + Section D thesis" }));
   } catch (e) {
-    log.err(`OpenAI call failed: ${e.message}`); process.exitCode = 1; return;
+    await reportLlmFailure(dir, "research", e); process.exitCode = 1; return;
   }
-  const cost = estimateCost(usage, model);
+  const cost = estimateCostFor(provider, usage, model);
   const webCost = estimateCost({ prompt_tokens: web.usage.input_tokens, completion_tokens: web.usage.output_tokens }, model);
   log.ok(`extracted: ${llm.risks?.length || 0} risks · ${llm.thesis?.length || 0} thesis · ${llm.anti_thesis?.length || 0} anti-thesis`);
   log.info(`tokens: research in ${cost.inTok}/out ${cost.outTok} + web in ${webCost.inTok}/out ${webCost.outTok} · est. cost $${(cost.usd + webCost.usd).toFixed(4)} (priced as ${cost.priced_as})`);
@@ -67,7 +67,7 @@ async function main() {
   const schema = JSON.parse(await readFile(SCHEMA_PATH, "utf8"));
   const v = validateResearch(merged, schema);
   merged._step8_research = {
-    model, web_provider: web.provider, citations: web.citations.length,
+    provider, model, web_provider: web.provider, citations: web.citations.length,
     tokens: { research_in: cost.inTok, research_out: cost.outTok, web_in: webCost.inTok, web_out: webCost.outTok },
     est_cost_usd: Number((cost.usd + webCost.usd).toFixed(4)), validated: v.ok, researched_at: merged.meta.generated_at,
   };
