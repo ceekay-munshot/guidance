@@ -23,6 +23,7 @@ import { fetchDoc, UA, shouldDegradeToPpt } from "./lib/fetchers.mjs";
 import { extractPdfText } from "./lib/pdf.mjs";
 import { selfCheck } from "./lib/selfcheck.mjs";
 import { kvPut, kvConfigured } from "./lib/kv.mjs";
+import { clearProviderHealth } from "./lib/llm.mjs";
 import { log, slugify, round, quarterFromDate, quarterFromTitle, expectedQuarter } from "./lib/util.mjs";
 
 /** Best-effort progress ping to KV (Step 11 loading screen). No-op without SLUG/creds; never throws. */
@@ -44,6 +45,11 @@ async function main() {
     firecrawlKey: process.env.FIRECRAWL_API_KEY,
     scrapedoKey: process.env.SCRAPEDO_API_KEY,
   };
+
+  // A run BEGINS here, so forget which providers were dead last time. In CI the checkout is fresh
+  // anyway; locally pipeline/out/ persists between analyses and a stale mark would otherwise keep
+  // routing around a provider whose key has since been fixed.
+  clearProviderHealth();
 
   log.step(`Munshot fetch-company — "${query}"  (${fetched_at})`);
   for (const [k, v] of Object.entries({ SCREENER_EMAIL: env.email, SCREENER_PASSWORD: env.password, FIRECRAWL_API_KEY: env.firecrawlKey, SCRAPEDO_API_KEY: env.scrapedoKey })) {

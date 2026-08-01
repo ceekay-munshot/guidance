@@ -19,7 +19,7 @@
 // production setup — behaviour is unchanged apart from the retries.
 
 import { writeFile } from "node:fs/promises";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { callStructured, estimateCost, DEFAULT_MODEL } from "./openai.mjs";
@@ -48,8 +48,24 @@ const FAILOVER_KINDS = new Set(["quota", "auth", "rate_limit", "server", "networ
 const OUT_ROOT = fileURLToPath(new URL("../out/", import.meta.url));
 const HEALTH_FILE = join(OUT_ROOT, ".provider-health.json");
 
+/**
+ * How long a mark stays valid. CI checks out fresh so `pipeline/out/` is empty, but a LOCAL checkout
+ * keeps it between analyses (it's gitignored, not cleaned) — so without an expiry, one run that hit
+ * an expired key would go on quietly routing around that provider forever. fetch-company clears the
+ * file at the start of every run; this TTL is the backstop for when a step is run on its own, and it
+ * comfortably exceeds the job's own 20-minute ceiling.
+ */
+const HEALTH_TTL_MS = 30 * 60 * 1000;
+
 function readUnhealthy() {
-  try { return JSON.parse(readFileSync(HEALTH_FILE, "utf8")) || {}; } catch { return {}; }
+  let raw;
+  try { raw = JSON.parse(readFileSync(HEALTH_FILE, "utf8")) || {}; } catch { return {}; }
+  const fresh = {};
+  for (const [provider, v] of Object.entries(raw)) {
+    const age = Date.now() - Date.parse(v?.at || "");
+    if (Number.isFinite(age) && age >= 0 && age < HEALTH_TTL_MS) fresh[provider] = v;
+  }
+  return fresh;
 }
 
 /** Record a provider as unusable for the remainder of this run. Best-effort — never throws. */
@@ -60,6 +76,15 @@ export function markProviderUnhealthy(provider, reason) {
     cur[provider] = { reason, at: new Date().toISOString() };
     writeFileSync(HEALTH_FILE, JSON.stringify(cur, null, 2));
   } catch { /* best-effort */ }
+}
+
+/**
+ * Forget every mark. Called by fetch-company at the START of a run, so provider health is scoped to
+ * one analysis: a key repaired since the last local run is given a fresh chance rather than being
+ * written off by a stale file. Best-effort — never throws.
+ */
+export function clearProviderHealth() {
+  try { rmSync(HEALTH_FILE, { force: true }); } catch { /* best-effort */ }
 }
 
 /** A durable failure is one no later step should pay to rediscover. */

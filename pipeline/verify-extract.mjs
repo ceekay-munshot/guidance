@@ -44,16 +44,28 @@ const sameModel = (a, b) => !!a && !!b && (String(a).startsWith(String(b)) || St
 export function verifierCandidates(extractedBy = {}) {
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
-  const override = process.env.VERIFY_MODEL;
   const by = extractedBy.provider || "openai"; // older reports predate _step7.provider
   const byModel = extractedBy.model || "";
-  const out = [];
 
-  if (by !== "anthropic" && anthropicKey) out.push({ provider: "anthropic", key: anthropicKey, model: override || DEFAULT_VERIFY_MODEL_ANTHROPIC, independence: "cross-provider" });
-  if (by !== "openai" && openaiKey) out.push({ provider: "openai", key: openaiKey, model: override || DEFAULT_VERIFY_MODEL, independence: "cross-provider" });
+  // VERIFY_MODEL is a SINGLE setting but there are now two possible verifier providers, so it must
+  // only apply to the one it actually names — inferred from the id. Handing an Anthropic model id to
+  // OpenAI (or vice versa) earns a 400, which would take down a run whose report was already
+  // complete. A setting that was correct under the old Anthropic-first behaviour must not become a
+  // landmine the first time extraction fails over.
+  const override = process.env.VERIFY_MODEL;
+  const isAnthropicModel = (m) => /^claude/i.test(String(m || ""));
+  const modelFor = (provider) => {
+    const belongs = override && (provider === "anthropic" ? isAnthropicModel(override) : !isAnthropicModel(override));
+    if (belongs) return override;
+    return provider === "anthropic" ? DEFAULT_VERIFY_MODEL_ANTHROPIC : DEFAULT_VERIFY_MODEL;
+  };
+
+  const out = [];
+  if (by !== "anthropic" && anthropicKey) out.push({ provider: "anthropic", key: anthropicKey, model: modelFor("anthropic"), independence: "cross-provider" });
+  if (by !== "openai" && openaiKey) out.push({ provider: "openai", key: openaiKey, model: modelFor("openai"), independence: "cross-provider" });
 
   const sameKey = by === "anthropic" ? anthropicKey : openaiKey;
-  const sameDefault = by === "anthropic" ? (override || DEFAULT_VERIFY_MODEL_ANTHROPIC) : (override || DEFAULT_VERIFY_MODEL);
+  const sameDefault = modelFor(by);
   if (sameKey && !sameModel(sameDefault, byModel)) out.push({ provider: by, key: sameKey, model: sameDefault, independence: "same provider, different model" });
   return out;
 }
@@ -119,17 +131,21 @@ async function main() {
       break;
     } catch (e) {
       lastErr = e;
-      // A malformed request is a real bug in OUR code and would fail on every candidate → fail loudly.
-      const providerDown = ["quota", "auth", "rate_limit", "server", "network"].includes(e.kind);
-      if (!providerDown) { log.err(`${cand.provider} call failed: ${e.message}`); process.exitCode = 1; return; }
-      log.warn(`${cand.provider}/${cand.model} unavailable (${e.kind}: ${e.message.slice(0, 140)})`);
+      // Try the NEXT candidate on any failure, including bad_request. Each candidate sends a
+      // different model id, so a 400 is far more likely a wrong-model setting than a broken schema —
+      // and the next candidate may well be fine. A genuinely malformed request simply fails on all of
+      // them and lands in the skip below, logged loudly, rather than taking the run with it.
+      const bug = !["quota", "auth", "rate_limit", "server", "network"].includes(e.kind);
+      if (bug) log.err(`${cand.provider}/${cand.model} rejected the request (${e.kind}): ${e.message.slice(0, 200)}`);
+      else log.warn(`${cand.provider}/${cand.model} unavailable (${e.kind}: ${e.message.slice(0, 140)})`);
     }
   }
   if (!V) {
-    // Every independent verifier is down. This pass is an INTERNAL quality tool that adds nothing
+    // Every independent verifier failed. This pass is an INTERNAL quality tool that adds nothing
     // visible to the report, so skipping it beats discarding a complete, already-validated analysis.
-    const why = `every independent verifier unavailable (last: ${lastErr?.kind || "error"})`;
-    log.warn(`${why} — SKIPPING the audit rather than failing the run`);
+    // The reason is logged AND recorded in verification.json, so a real bug is still loud.
+    const why = `every independent verifier failed (last: ${lastErr?.kind || "error"} — ${String(lastErr?.message || "").slice(0, 160)})`;
+    log.err(`${why} — SKIPPING the audit rather than failing an otherwise complete run`);
     await writeSkipped(why, null);
     return;
   }

@@ -209,6 +209,22 @@ const withEnv = (env, fn) => {
   const c = withEnv({ ANTHROPIC_API_KEY: "a" }, () => verifierCandidates({ provider: "anthropic", model: "claude-sonnet-5" }));
   ok(c.length === 0, "nothing independent configured → empty candidate list (audit skipped)");
 }
+// VERIFY_MODEL is one setting but there are two possible verifier providers, so it must only apply
+// to the one it names. Handing an Anthropic id to OpenAI earns a 400 that would take down a run
+// whose report was already complete — a setting valid under the old behaviour must not become a trap.
+{
+  const c = withEnv({ OPENAI_API_KEY: "o", ANTHROPIC_API_KEY: "a", VERIFY_MODEL: "claude-sonnet-5" }, () => verifierCandidates({ provider: "anthropic", model: "claude-opus-4" }));
+  const openai = c.find((x) => x.provider === "openai");
+  ok(openai && openai.model === "gpt-4o", "an Anthropic VERIFY_MODEL is NOT sent to OpenAI — it falls back to gpt-4o");
+  ok(c.every((x) => x.provider !== "anthropic" || /^claude/.test(x.model)), "…and only Anthropic candidates carry a claude-* id");
+}
+{
+  const c = withEnv({ OPENAI_API_KEY: "o", ANTHROPIC_API_KEY: "a", VERIFY_MODEL: "gpt-4o-mini" }, () => verifierCandidates({ provider: "openai", model: "gpt-4.1" }));
+  const anth = c.find((x) => x.provider === "anthropic");
+  const oai = c.find((x) => x.provider === "openai");
+  ok(anth && anth.model === "claude-sonnet-5", "an OpenAI VERIFY_MODEL is NOT sent to Anthropic");
+  ok(oai && oai.model === "gpt-4o-mini", "…and the override still applies to the provider it names");
+}
 
 // ── 5. a lender's valuation prose must say EV/EBITDA doesn't apply ──
 const { buildSanityCheck } = await import("../lib/model.mjs");
@@ -241,6 +257,26 @@ const VAL = { market_cap_cr: 16220, ev_cr: 24420, pe: { fy27e: 13.2, fy28e: 11.1
   withEnv({ OPENAI_API_KEY: "o" }, () => {
     ok(availableProviders().map((p) => p.provider).join(",") === "openai",
       "…unless it is the only one left — a doomed attempt still yields the accurate error");
+  });
+  rmSync(HEALTH, { force: true });
+}
+{
+  // pipeline/out/ is gitignored, not cleaned, so it survives between LOCAL runs — a mark must not
+  // outlive the analysis that made it, or a repaired key stays routed around indefinitely.
+  const { markProviderUnhealthy, availableProviders, clearProviderHealth } = await import("../lib/llm.mjs");
+  const { rmSync, readFileSync, writeFileSync } = await import("node:fs");
+  const HEALTH = new URL("../out/.provider-health.json", import.meta.url);
+  withEnv({ OPENAI_API_KEY: "o", ANTHROPIC_API_KEY: "a" }, () => {
+    markProviderUnhealthy("openai", "quota");
+    clearProviderHealth();
+    ok(availableProviders().map((p) => p.provider).join(",") === "openai,anthropic", "a new run clears provider health (fetch-company calls this first)");
+
+    // …and a stale file left by an interrupted run expires on its own.
+    markProviderUnhealthy("openai", "quota");
+    const stale = JSON.parse(readFileSync(HEALTH, "utf8"));
+    stale.openai.at = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+    writeFileSync(HEALTH, JSON.stringify(stale));
+    ok(availableProviders().map((p) => p.provider).join(",") === "openai,anthropic", "a mark older than the TTL is ignored (backstop for a step run on its own)");
   });
   rmSync(HEALTH, { force: true });
 }
