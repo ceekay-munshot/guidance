@@ -17,6 +17,12 @@
 # Optional repo variables (Settings → Variables → Actions):
 #   OPENAI_MODEL  — overrides the extraction/research model (pipeline/lib/openai.mjs)
 #   VERIFY_MODEL  — overrides the verification model (defaults to a different model)
+#   LLM_PROVIDER  — "openai" (default, unchanged) or "claude" to route Steps 7/8a/8b/9a/9b's
+#                   structured completions to Claude via AWS Bedrock instead (pipeline/lib/llm.mjs).
+#   BEDROCK_REGION / BEDROCK_MODEL_ID — override the Bedrock region/model (default us-east-1 /
+#                   us.anthropic.claude-sonnet-4-5-20250929-v1:0 — verify these against the account).
+# Optional repo secret (only needed once LLM_PROVIDER=claude is set):
+#   temp_claude_token  — an AWS Bedrock bearer API key; read by the pipeline as CLAUDE_BEDROCK_KEY.
 # ---------------------------------------------------------------------------
 
 name: fetch-company
@@ -135,6 +141,10 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          CLAUDE_BEDROCK_KEY: ${{ secrets.temp_claude_token }}
+          BEDROCK_REGION: ${{ vars.BEDROCK_REGION }}
+          BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
         run: |
           node pipeline/kv-put.mjs progress "$SLUG" extract
           node pipeline/extract-concall.mjs "$COMPANY"
@@ -146,6 +156,10 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          CLAUDE_BEDROCK_KEY: ${{ secrets.temp_claude_token }}
+          BEDROCK_REGION: ${{ vars.BEDROCK_REGION }}
+          BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
         run: |
           node pipeline/kv-put.mjs progress "$SLUG" research
@@ -160,6 +174,10 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           VERIFY_MODEL: ${{ vars.VERIFY_MODEL }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          CLAUDE_BEDROCK_KEY: ${{ secrets.temp_claude_token }}
+          BEDROCK_REGION: ${{ vars.BEDROCK_REGION }}
+          BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
         run: |
           node pipeline/kv-put.mjs progress "$SLUG" verify
           node pipeline/verify-extract.mjs "$COMPANY"
@@ -171,6 +189,10 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          CLAUDE_BEDROCK_KEY: ${{ secrets.temp_claude_token }}
+          BEDROCK_REGION: ${{ vars.BEDROCK_REGION }}
+          BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
         run: |
           node pipeline/kv-put.mjs progress "$SLUG" model
           node pipeline/model-report.mjs "$COMPANY"
@@ -182,6 +204,10 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          CLAUDE_BEDROCK_KEY: ${{ secrets.temp_claude_token }}
+          BEDROCK_REGION: ${{ vars.BEDROCK_REGION }}
+          BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
         run: |
           node pipeline/kv-put.mjs progress "$SLUG" finalize
           node pipeline/finalize-report.mjs "$COMPANY"

@@ -13,7 +13,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callStructured, estimateCost, DEFAULT_MODEL } from "./lib/openai.mjs";
+import { estimateCost, DEFAULT_MODEL } from "./lib/openai.mjs";
+import { callLLMStructured, estimateLLMCost, llmApiKey, llmApiKeyEnvName, llmModel, LLM_LABEL } from "./lib/llm.mjs";
 import { RISK_THESIS_JSON_SCHEMA } from "./lib/research-schema.mjs";
 import { buildRiskThesisMessages, assembleResearch, validateResearch } from "./lib/research-assemble.mjs";
 import { gatherWebContext, researchQueries } from "./lib/websearch.mjs";
@@ -22,14 +23,19 @@ import { log } from "./lib/util.mjs";
 
 const OUT_ROOT = fileURLToPath(new URL("./out/", import.meta.url));
 const SCHEMA_PATH = fileURLToPath(new URL("../public/data/report.schema.json", import.meta.url));
+// OpenAI web_search (below) has no Bedrock/Claude equivalent in scope — it always uses OPENAI_MODEL
+// and OPENAI_API_KEY directly, regardless of LLM_PROVIDER, and degrades gracefully (Firecrawl → none)
+// when no OpenAI key is set. Only the structured risk/thesis completion is toggle-aware (LLM_MODEL).
 const OPENAI_MODEL = process.env.OPENAI_MODEL || DEFAULT_MODEL;
+const LLM_MODEL = llmModel();
 
 async function main() {
   const arg = (process.argv[2] || process.env.COMPANY || "").trim();
-  const apiKey = process.env.OPENAI_API_KEY;
+  const openaiKeyForSearch = process.env.OPENAI_API_KEY;
+  const apiKey = llmApiKey();
   const firecrawlKey = process.env.FIRECRAWL_API_KEY;
-  log.step(`Munshot research-concall (C.6 + D) — model ${OPENAI_MODEL}`);
-  if (!apiKey) { log.err("OPENAI_API_KEY missing — cannot research"); process.exitCode = 1; return; }
+  log.step(`Munshot research-concall (C.6 + D) — model ${LLM_MODEL}`);
+  if (!apiKey) { log.err(`${llmApiKeyEnvName()} missing — cannot research`); process.exitCode = 1; return; }
 
   const found = await findOutDir(OUT_ROOT, arg);
   if (!found) { log.err(`no bundle found in pipeline/out/${arg ? ` for "${arg}"` : ""} — run fetch-company first`); process.exitCode = 1; return; }
@@ -43,7 +49,7 @@ async function main() {
   // ── web research (targeted queries; graceful if no provider) ──
   const queries = researchQueries(report.meta?.company, report.about?.sector);
   log.step(`Web research — ${queries.length} targeted queries${firecrawlKey ? "" : " (no FIRECRAWL_API_KEY; OpenAI web_search only)"}`);
-  const web = await gatherWebContext({ queries, openaiKey: apiKey, model: OPENAI_MODEL, firecrawlKey, log });
+  const web = await gatherWebContext({ queries, openaiKey: openaiKeyForSearch, model: OPENAI_MODEL, firecrawlKey, log });
   log.info(`web provider: ${web.provider} · ${web.citations.length} citations · ${web.context.length} context chars`);
   if (web.provider === "none") log.warn("no web findings — risks will be empty; thesis will be Est.-only");
 
@@ -51,12 +57,12 @@ async function main() {
   const messages = buildRiskThesisMessages(report, web, {});
   let llm, usage, model;
   try {
-    log.step("Calling OpenAI (structured outputs) for risks + thesis…");
-    ({ data: llm, usage, model } = await callStructured({ apiKey, model: OPENAI_MODEL, messages, schema: RISK_THESIS_JSON_SCHEMA, schemaName: "risk_thesis" }));
+    log.step(`Calling ${LLM_LABEL} (structured outputs) for risks + thesis…`);
+    ({ data: llm, usage, model } = await callLLMStructured({ apiKey, model: LLM_MODEL, messages, schema: RISK_THESIS_JSON_SCHEMA, schemaName: "risk_thesis" }));
   } catch (e) {
-    log.err(`OpenAI call failed: ${e.message}`); process.exitCode = 1; return;
+    log.err(`${LLM_LABEL} call failed: ${e.message}`); process.exitCode = 1; return;
   }
-  const cost = estimateCost(usage, model);
+  const cost = estimateLLMCost(usage, model);
   const webCost = estimateCost({ prompt_tokens: web.usage.input_tokens, completion_tokens: web.usage.output_tokens }, model);
   log.ok(`extracted: ${llm.risks?.length || 0} risks · ${llm.thesis?.length || 0} thesis · ${llm.anti_thesis?.length || 0} anti-thesis`);
   log.info(`tokens: research in ${cost.inTok}/out ${cost.outTok} + web in ${webCost.inTok}/out ${webCost.outTok} · est. cost $${(cost.usd + webCost.usd).toFixed(4)} (priced as ${cost.priced_as})`);

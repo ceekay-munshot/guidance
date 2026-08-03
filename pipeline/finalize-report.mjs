@@ -11,7 +11,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callStructured, estimateCost, DEFAULT_MODEL } from "./lib/openai.mjs";
+import { callLLMStructured, estimateLLMCost, llmApiKey, llmApiKeyEnvName, llmModel, LLM_LABEL } from "./lib/llm.mjs";
 import { TAKEAWAYS_JSON_SCHEMA } from "./lib/model-schema.mjs";
 import { buildFinalizeMessages, assembleKeyTakeaways, validateFull, stripInternal } from "./lib/model-assemble.mjs";
 import { salvageReport } from "./lib/salvage.mjs";
@@ -20,13 +20,13 @@ import { log } from "./lib/util.mjs";
 
 const OUT_ROOT = fileURLToPath(new URL("./out/", import.meta.url));
 const SCHEMA_PATH = fileURLToPath(new URL("../public/data/report.schema.json", import.meta.url));
-const OPENAI_MODEL = process.env.OPENAI_MODEL || DEFAULT_MODEL;
+const LLM_MODEL = llmModel();
 
 async function main() {
   const arg = (process.argv[2] || process.env.COMPANY || "").trim();
-  const apiKey = process.env.OPENAI_API_KEY;
-  log.step(`Munshot finalize-report (key_takeaways + end-to-end validation) — model ${OPENAI_MODEL}`);
-  if (!apiKey) { log.err("OPENAI_API_KEY missing — cannot finalize"); process.exitCode = 1; return; }
+  const apiKey = llmApiKey();
+  log.step(`Munshot finalize-report (key_takeaways + end-to-end validation) — model ${LLM_MODEL}`);
+  if (!apiKey) { log.err(`${llmApiKeyEnvName()} missing — cannot finalize`); process.exitCode = 1; return; }
 
   const found = await findOutDir(OUT_ROOT, arg);
   if (!found) { log.err(`no bundle found in pipeline/out/${arg ? ` for "${arg}"` : ""} — run fetch-company first`); process.exitCode = 1; return; }
@@ -55,12 +55,12 @@ async function main() {
   const messages = buildFinalizeMessages(body);
   let llm, usage, model;
   try {
-    log.step("Calling OpenAI (structured outputs) for key_takeaways…");
-    ({ data: llm, usage, model } = await callStructured({ apiKey, model: OPENAI_MODEL, messages, schema: TAKEAWAYS_JSON_SCHEMA, schemaName: "key_takeaways" }));
+    log.step(`Calling ${LLM_LABEL} (structured outputs) for key_takeaways…`);
+    ({ data: llm, usage, model } = await callLLMStructured({ apiKey, model: LLM_MODEL, messages, schema: TAKEAWAYS_JSON_SCHEMA, schemaName: "key_takeaways" }));
   } catch (e) {
-    log.err(`OpenAI call failed: ${e.message}`); process.exitCode = 1; return;
+    log.err(`${LLM_LABEL} call failed: ${e.message}`); process.exitCode = 1; return;
   }
-  const cost = estimateCost(usage, model);
+  const cost = estimateLLMCost(usage, model);
   const { report: withTakeaways, warnings } = assembleKeyTakeaways(body, llm);
   warnings.forEach((w) => log.warn(w));
   log.ok(`${withTakeaways.key_takeaways.length} key takeaways`);
