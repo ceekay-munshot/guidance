@@ -141,7 +141,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'claude' }}
           CLAUDE_BEDROCK_KEY: ${{ secrets.temp_claude_token }}
           BEDROCK_REGION: ${{ vars.BEDROCK_REGION }}
           BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
@@ -156,7 +156,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'claude' }}
           CLAUDE_BEDROCK_KEY: ${{ secrets.temp_claude_token }}
           BEDROCK_REGION: ${{ vars.BEDROCK_REGION }}
           BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
@@ -174,7 +174,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           VERIFY_MODEL: ${{ vars.VERIFY_MODEL }}
-          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'claude' }}
           CLAUDE_BEDROCK_KEY: ${{ secrets.temp_claude_token }}
           BEDROCK_REGION: ${{ vars.BEDROCK_REGION }}
           BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
@@ -189,7 +189,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'claude' }}
           CLAUDE_BEDROCK_KEY: ${{ secrets.temp_claude_token }}
           BEDROCK_REGION: ${{ vars.BEDROCK_REGION }}
           BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
@@ -204,7 +204,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'claude' }}
           CLAUDE_BEDROCK_KEY: ${{ secrets.temp_claude_token }}
           BEDROCK_REGION: ${{ vars.BEDROCK_REGION }}
           BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
