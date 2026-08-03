@@ -17,6 +17,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { callStructured, estimateCost } from "./lib/openai.mjs";
 import { callAnthropicStructured, estimateAnthropicCost, DEFAULT_VERIFY_MODEL_ANTHROPIC } from "./lib/anthropic.mjs";
+import { callBedrockStructured, estimateBedrockCost, DEFAULT_MODEL_BEDROCK } from "./lib/bedrock.mjs";
+import { LLM_PROVIDER, llmApiKey, llmApiKeyEnvName } from "./lib/llm.mjs";
 import { VERIFY_JSON_SCHEMA } from "./lib/research-schema.mjs";
 import { buildClaims, buildVerifyMessages, applyVerification } from "./lib/verify.mjs";
 import { findOutDir } from "./lib/out.mjs";
@@ -25,11 +27,16 @@ import { log } from "./lib/util.mjs";
 const OUT_ROOT = fileURLToPath(new URL("./out/", import.meta.url));
 const DEFAULT_VERIFY_MODEL = "gpt-4o"; // OpenAI, deliberately a DIFFERENT model than extraction's gpt-4.1
 
-/** Pick the verifier provider: Anthropic if its key is set (true cross-provider), else OpenAI. */
+/**
+ * Pick the verifier provider: Anthropic (direct) if ANTHROPIC_API_KEY is set (true cross-provider —
+ * takes priority, unchanged from before); else Claude via Bedrock if LLM_PROVIDER=claude (see
+ * pipeline/lib/llm.mjs); else the original OpenAI fallback (default, byte-for-byte unchanged).
+ */
 function chooseVerifier() {
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   const override = process.env.VERIFY_MODEL;
   if (anthropicKey) return { provider: "anthropic", key: anthropicKey, model: override || DEFAULT_VERIFY_MODEL_ANTHROPIC };
+  if (LLM_PROVIDER === "claude") return { provider: "claude", key: llmApiKey(), model: override || DEFAULT_MODEL_BEDROCK };
   return { provider: "openai", key: process.env.OPENAI_API_KEY, model: override || DEFAULT_VERIFY_MODEL };
 }
 
@@ -38,7 +45,7 @@ async function main() {
   const V = chooseVerifier();
   log.step(`Munshot verify-extract — provider ${V.provider}, model ${V.model}`);
   if (!process.env.OPENAI_API_KEY && V.provider === "openai") { log.err("OPENAI_API_KEY missing — cannot verify"); process.exitCode = 1; return; }
-  if (!V.key) { log.err(`${V.provider} key missing — cannot verify`); process.exitCode = 1; return; }
+  if (!V.key) { log.err(`${V.provider === "claude" ? llmApiKeyEnvName() : V.provider} key missing — cannot verify`); process.exitCode = 1; return; }
   if (V.provider === "openai") log.info("no ANTHROPIC_API_KEY set — using a second OpenAI model. Set ANTHROPIC_API_KEY for a stronger, independent cross-provider check.");
 
   const found = await findOutDir(OUT_ROOT, arg);
@@ -68,11 +75,12 @@ async function main() {
   try {
     log.step(`Calling ${V.provider} (structured outputs) to audit claims…`);
     if (V.provider === "anthropic") ({ data: out, usage, model } = await callAnthropicStructured({ apiKey: V.key, model: V.model, messages, schema: VERIFY_JSON_SCHEMA, schemaName: "verify" }));
+    else if (V.provider === "claude") ({ data: out, usage, model } = await callBedrockStructured({ apiKey: V.key, model: V.model, messages, schema: VERIFY_JSON_SCHEMA, schemaName: "verify" }));
     else ({ data: out, usage, model } = await callStructured({ apiKey: V.key, model: V.model, messages, schema: VERIFY_JSON_SCHEMA, schemaName: "verify" }));
   } catch (e) {
     log.err(`${V.provider} call failed: ${e.message}`); process.exitCode = 1; return;
   }
-  const cost = V.provider === "anthropic" ? estimateAnthropicCost(usage, model) : estimateCost(usage, model);
+  const cost = V.provider === "anthropic" ? estimateAnthropicCost(usage, model) : V.provider === "claude" ? estimateBedrockCost(usage, model) : estimateCost(usage, model);
   log.ok(`${out.verdicts?.length || 0} verdicts returned`);
   log.info(`tokens: in ${cost.inTok} / out ${cost.outTok} · est. cost $${cost.usd.toFixed(4)} (priced as ${cost.priced_as})`);
 

@@ -13,14 +13,15 @@ import { readFile, writeFile, readdir } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callStructured, estimateCost, estTokens, DEFAULT_MODEL } from "./lib/openai.mjs";
+import { estTokens } from "./lib/openai.mjs";
+import { callLLMStructured, estimateLLMCost, llmApiKey, llmApiKeyEnvName, llmModel, LLM_LABEL } from "./lib/llm.mjs";
 import { EXTRACTION_JSON_SCHEMA } from "./lib/extract-schema.mjs";
 import { buildMessages, assembleReport, validateBC, verifyQuotes } from "./lib/extract-assemble.mjs";
 import { log } from "./lib/util.mjs";
 
 const OUT_ROOT = fileURLToPath(new URL("./out/", import.meta.url));
 const SCHEMA_PATH = fileURLToPath(new URL("../public/data/report.schema.json", import.meta.url));
-const OPENAI_MODEL = process.env.OPENAI_MODEL || DEFAULT_MODEL;
+const LLM_MODEL = llmModel();
 const MAX_CHARS = 800000; // generous guard (~200k tokens); real transcripts are ~50k chars
 
 async function findBundleDir(arg) {
@@ -48,9 +49,9 @@ async function findBundleDir(arg) {
 
 async function main() {
   const arg = (process.argv[2] || process.env.COMPANY || "").trim();
-  const apiKey = process.env.OPENAI_API_KEY;
-  log.step(`Munshot extract-concall — model ${OPENAI_MODEL}`);
-  if (!apiKey) { log.err("OPENAI_API_KEY missing — cannot extract"); process.exitCode = 1; return; }
+  const apiKey = llmApiKey();
+  log.step(`Munshot extract-concall — model ${LLM_MODEL}`);
+  if (!apiKey) { log.err(`${llmApiKeyEnvName()} missing — cannot extract`); process.exitCode = 1; return; }
 
   const found = await findBundleDir(arg);
   if (!found) { log.err(`no bundle found in pipeline/out/${arg ? ` for "${arg}"` : ""} — run fetch-company first`); process.exitCode = 1; return; }
@@ -70,18 +71,18 @@ async function main() {
   const contentChars = (pptOnly ? pptText : transcript).length + (pptOnly ? 0 : pptText.length);
   log.info(`documents: transcript ${transcript.length} chars, ppt ${pptText.length} chars · ~${estTokens(contentChars)} input tokens (pre-call est.)`);
 
-  // ── call OpenAI (structured outputs) ──
+  // ── call the LLM (structured outputs) ──
   const messages = buildMessages(bundle, pptOnly ? "" : transcript, pptText, { pptOnly });
   let llm, usage, model;
   try {
-    log.step("Calling OpenAI (structured outputs)…");
-    ({ data: llm, usage, model } = await callStructured({ apiKey, model: OPENAI_MODEL, messages, schema: EXTRACTION_JSON_SCHEMA, schemaName: "concall_extract" }));
+    log.step(`Calling ${LLM_LABEL} (structured outputs)…`);
+    ({ data: llm, usage, model } = await callLLMStructured({ apiKey, model: LLM_MODEL, messages, schema: EXTRACTION_JSON_SCHEMA, schemaName: "concall_extract" }));
   } catch (e) {
-    log.err(`OpenAI call failed: ${e.message}`);
+    log.err(`${LLM_LABEL} call failed: ${e.message}`);
     process.exitCode = 1;
     return;
   }
-  const cost = estimateCost(usage, model);
+  const cost = estimateLLMCost(usage, model);
   log.ok(`extracted: ${llm.concall?.guidance?.length || 0} guidance · ${llm.concall?.themes?.length || 0} themes · ${llm.concall?.thesis_triggers?.length || 0} triggers · ${llm.concall?.classification?.length || 0} tags`);
   log.info(`tokens: in ${cost.inTok} / out ${cost.outTok} · est. cost $${cost.usd.toFixed(4)} (priced as ${cost.priced_as})`);
 

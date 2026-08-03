@@ -11,7 +11,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callStructured, estimateCost, DEFAULT_MODEL } from "./lib/openai.mjs";
+import { callLLMStructured, estimateLLMCost, llmApiKey, llmApiKeyEnvName, llmModel, LLM_LABEL } from "./lib/llm.mjs";
 import { MODEL_JSON_SCHEMA } from "./lib/model-schema.mjs";
 import { buildModelMessages, assembleModel, validateEFG } from "./lib/model-assemble.mjs";
 import { findOutDir } from "./lib/out.mjs";
@@ -19,7 +19,7 @@ import { log } from "./lib/util.mjs";
 
 const OUT_ROOT = fileURLToPath(new URL("./out/", import.meta.url));
 const SCHEMA_PATH = fileURLToPath(new URL("../public/data/report.schema.json", import.meta.url));
-const OPENAI_MODEL = process.env.OPENAI_MODEL || DEFAULT_MODEL;
+const LLM_MODEL = llmModel();
 
 /** Positive read? Buy-watch, or a constructive theme balance without an Avoid verdict. */
 function isPositiveTone(report, conviction) {
@@ -31,9 +31,9 @@ function isPositiveTone(report, conviction) {
 
 async function main() {
   const arg = (process.argv[2] || process.env.COMPANY || "").trim();
-  const apiKey = process.env.OPENAI_API_KEY;
-  log.step(`Munshot model-report (E + F + G) — model ${OPENAI_MODEL}`);
-  if (!apiKey) { log.err("OPENAI_API_KEY missing — cannot model"); process.exitCode = 1; return; }
+  const apiKey = llmApiKey();
+  log.step(`Munshot model-report (E + F + G) — model ${LLM_MODEL}`);
+  if (!apiKey) { log.err(`${llmApiKeyEnvName()} missing — cannot model`); process.exitCode = 1; return; }
 
   const found = await findOutDir(OUT_ROOT, arg);
   if (!found) { log.err(`no bundle found in pipeline/out/${arg ? ` for "${arg}"` : ""} — run fetch-company first`); process.exitCode = 1; return; }
@@ -51,12 +51,12 @@ async function main() {
   const messages = buildModelMessages(report, fy26a, ctx, {});
   let llm, usage, model;
   try {
-    log.step("Calling OpenAI (structured outputs) for the model…");
-    ({ data: llm, usage, model } = await callStructured({ apiKey, model: OPENAI_MODEL, messages, schema: MODEL_JSON_SCHEMA, schemaName: "financial_model" }));
+    log.step(`Calling ${LLM_LABEL} (structured outputs) for the model…`);
+    ({ data: llm, usage, model } = await callLLMStructured({ apiKey, model: LLM_MODEL, messages, schema: MODEL_JSON_SCHEMA, schemaName: "financial_model" }));
   } catch (e) {
-    log.err(`OpenAI call failed: ${e.message}`); process.exitCode = 1; return;
+    log.err(`${LLM_LABEL} call failed: ${e.message}`); process.exitCode = 1; return;
   }
-  const cost = estimateCost(usage, model);
+  const cost = estimateLLMCost(usage, model);
   log.ok(`assumptions: growth ${llm.revenue_growth_fy27}/${llm.revenue_growth_fy28}% · EBITDA margin ${llm.ebitda_margin_fy27}/${llm.ebitda_margin_fy28}% · conviction ${llm.conviction}`);
   log.info(`tokens: in ${cost.inTok} / out ${cost.outTok} · est. cost $${cost.usd.toFixed(4)} (priced as ${cost.priced_as})`);
 
