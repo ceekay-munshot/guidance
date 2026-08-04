@@ -15,7 +15,19 @@ import { exportPdf, exportExcel } from "./export.js";
 const MAX_RESULTS = 8;
 const SEARCH_DEBOUNCE_MS = 200;
 const POLL_INTERVAL_MS = 2500;
-const POLL_TIMEOUT_MS = 300000; // 5 min — generous headroom over the ~1-2 min pipeline
+// The client keeps polling until the run finishes, errors, or genuinely stalls — guarded by two budgets:
+//  • POLL_STALL_MS — max time with NO forward progress before we surface the soft "taking longer"
+//    notice. It RESETS every time the pipeline advances a stage, so a healthy multi-stage run of any
+//    length never trips it; only a run that stops making progress does. Sized to absorb the largest
+//    expected gap between progress pings — the initial wait (GitHub Actions queue + runner cold-start +
+//    dep/Chromium install can be a few minutes before the first "resolve" ping) or the slowest LLM stage.
+//  • POLL_MAX_MS — hard ceiling regardless of progress, aligned with the Worker's STALE_STATUS_MS
+//    (25 min): past that the server itself treats the run as stale, so "Try again" starts a fresh run
+//    rather than re-attaching to a dead one.
+// (The old flat 5-min cap was shorter than a normal run — cold-start + npm/Chromium install + five LLM
+//  stages take ~5 min, plus KV propagation — so healthy runs tripped a false "Couldn't complete" error.)
+const POLL_STALL_MS = 10 * 60 * 1000; // 10 min without forward progress → soft "taking longer" notice
+const POLL_MAX_MS = 25 * 60 * 1000;   // 25 min absolute — matches the Worker's STALE_STATUS_MS
 
 // ── API client ──
 const api = {
@@ -287,7 +299,7 @@ function renderLoading(t) {
   screens.loading.innerHTML = `
     <div class="fade-in max-w-2xl mx-auto pt-14 pb-10">
       <div class="text-center mb-8">
-        <div class="inline-flex items-center gap-2 text-xs text-slate-400 mb-3"><span class="spinner"></span> Analyzing — this usually takes ~1–2 minutes</div>
+        <div class="inline-flex items-center gap-2 text-xs text-slate-400 mb-3"><span class="spinner"></span> Analyzing — this usually takes a few minutes</div>
         <h2 class="font-display text-3xl font-bold text-slate-800">${escapeHtml(t.name)}</h2>
         <p class="font-mono text-sm text-slate-400 mt-1">${escapeHtml(t.ticker || "")}</p>
       </div>
@@ -351,14 +363,22 @@ function paintProgress() {
 }
 
 async function pollLoop(t, token) {
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  const hardDeadline = Date.now() + POLL_MAX_MS;
+  let stallDeadline = Date.now() + POLL_STALL_MS; // refreshed on every forward step (see below)
+  let lastStageIdx = -1;
   const tick = async () => {
     if (token !== runToken) return { stop: true };
     const decision = await api.reportTick(t.slug);
     if (token !== runToken) return { stop: true };
     if (decision.action === "done") { finishLoading(t, decision.report, token, decision.partial); return { stop: true }; }
     if (decision.action === "error") { failLoading(t, decision.message); return { stop: true }; }
-    if (decision.stage) setStage(decision.stage);
+    if (decision.stage) {
+      setStage(decision.stage);
+      // A later stage than we've seen proves the run is alive and moving → refresh the stall budget so
+      // a legitimately long pipeline is never mistaken for a stuck one and false-flagged as failed.
+      const idx = stageInfo(decision.stage).index;
+      if (idx > lastStageIdx) { lastStageIdx = idx; stallDeadline = Date.now() + POLL_STALL_MS; }
+    }
     return { stop: false };
   };
   // immediate first tick, then interval; re-poll on refocus so a backgrounded tab catches up.
@@ -366,7 +386,7 @@ async function pollLoop(t, token) {
   document.addEventListener("visibilitychange", onFocus);
   try {
     let r = await tick();
-    while (!r.stop && Date.now() < deadline) { await sleep(POLL_INTERVAL_MS); r = await tick(); }
+    while (!r.stop && Date.now() < stallDeadline && Date.now() < hardDeadline) { await sleep(POLL_INTERVAL_MS); r = await tick(); }
     if (!r.stop && token === runToken) failLoading(t, "This is taking longer than expected — the run may still finish. Try again in a minute.", true);
   } finally { document.removeEventListener("visibilitychange", onFocus); }
 }
