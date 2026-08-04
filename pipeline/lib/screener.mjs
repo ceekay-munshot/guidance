@@ -91,12 +91,24 @@ export function parseCompanyPage(html) {
   const pcol = pnl ? columnIndexFor(pnl.headers, /mar\s*2026/i) : -1;
   if (pnl && pcol < 0) notes.push("no 'Mar 2026' column in P&L — FY26 actuals may be unreported");
   const revenue = rowVal(pnl, ["sales", "revenue"], pcol);
-  const ebitda = rowVal(pnl, ["operating profit"], pcol);
-  const ebitda_margin_pct = rowVal(pnl, ["opm"], pcol);
+  // Banks / NBFCs (lenders) have no "Operating Profit / OPM" line — Screener shows "Financing Profit"
+  // and "Financing Margin %" instead. Accept either label so a lender's operating profit is captured
+  // rather than dropped as null (which used to hard-fail the self-check for every financial company).
+  const ebitda = rowVal(pnl, ["operating profit", "financing profit"], pcol);
+  const ebitda_margin_pct = rowVal(pnl, ["opm", "financing margin"], pcol);
   const pat = rowVal(pnl, ["net profit"], pcol);
   const net_margin_pct = pat != null && revenue ? (pat / revenue) * 100 : null;
   // Screener P&L has no gross margin line — leave null, never fabricate.
   const gross_margin_pct = null;
+
+  // Is this a lender (bank / NBFC / financial)? Structural signal first — the P&L carries a
+  // "Financing Profit / Margin" row in place of "Operating Profit / OPM" — with the sector label as a
+  // fallback. Lenders legitimately report no EBITDA/OPM, so the self-check treats a missing one as a
+  // note rather than a blocker for them (see lib/selfcheck.mjs).
+  const pnlLabels = pnl ? Array.from(pnl.rows.keys()) : [];
+  const is_financial =
+    pnlLabels.some((l) => l.includes("financing profit") || l.includes("financing margin")) ||
+    /\b(bank|nbfc)\b|financ|insurance|lending|housing finance/i.test(`${sector || ""} ${sub_sector || ""}`);
 
   // Balance sheet — net debt = borrowings − cash (cash rarely on the condensed BS).
   const bs = readTable($, "balance-sheet");
@@ -117,7 +129,7 @@ export function parseCompanyPage(html) {
   const valuation_context = parseValuationContext($, ratios);
 
   return {
-    name, sector, sub_sector,
+    name, sector, sub_sector, is_financial,
     inputs: { cmp, cmp_date: null, shares_out_cr, market_cap_cr, net_debt_cr, net_debt_note, borrowings, cash },
     fy26a: { revenue, ebitda, ebitda_margin_pct, pat, net_margin_pct, gross_margin_pct },
     concalls,

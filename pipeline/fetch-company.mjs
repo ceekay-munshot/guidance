@@ -23,7 +23,7 @@ import { fetchDoc, UA, shouldDegradeToPpt } from "./lib/fetchers.mjs";
 import { extractPdfText } from "./lib/pdf.mjs";
 import { selfCheck } from "./lib/selfcheck.mjs";
 import { kvPut, kvConfigured } from "./lib/kv.mjs";
-import { log, slugify, round, quarterFromDate, quarterFromTitle, expectedQuarter } from "./lib/util.mjs";
+import { log, slugify, round, quarterFromDate, quarterFromTitle, expectedQuarter, resolveQuarter } from "./lib/util.mjs";
 
 /** Best-effort progress ping to KV (Step 11 loading screen). No-op without SLUG/creds; never throws. */
 async function kvProgress(stage) {
@@ -123,14 +123,13 @@ async function main() {
     const latest = parsed.concalls.entries[0] || null;
     const parsedQ = latest ? quarterFromTitle(latest.title) || quarterFromDate({ y: latest.y, m: latest.m }).quarter || null : null;
     const expQ = expectedQuarter(fetched_at);
-    // meta.quarter is required to match ^Q[1-4]FY[0-9]{2}$ — it must never be null. When the concall's
-    // quarter can't be parsed, fall back to the EXPECTED current quarter (not an older one) and leave
-    // quarter_confirmed=false so the UI shows "(quarter unconfirmed)" — a graceful degrade, not a hard
-    // finalize-gate failure. expectedQuarter() is date-derived and always pattern-valid.
-    const quarter = parsedQ || expQ;
-    const quarter_confirmed = !!parsedQ && parsedQ === expQ;
+    // Always analyse the quarter parsed from the ACTUAL latest concall on Screener; expQ (a date-based
+    // guess) is only the fallback when nothing parsed. A concall newer than the date heuristic (company
+    // reported early) is still "confirmed" — only a missing parse or a stale (older) quarter is not.
+    // meta.quarter is required to match ^Q[1-4]FY[0-9]{2}$ and is never null (resolveQuarter guarantees it).
+    const { quarter, confirmed: quarter_confirmed, note: quarterNote } = resolveQuarter(parsedQ, expQ);
     if (latest) log.ok(`latest concall: ${latest.date || "?"} → ${parsedQ || "?"} (expected ${expQ}) · confirmed=${quarter_confirmed}`);
-    if (parsedQ && expQ && parsedQ !== expQ) diagnostics.notes.push(`latest posted concall is ${parsedQ}, but ${expQ} was expected by now — the expected quarter may not be posted yet`);
+    if (quarterNote) diagnostics.notes.push(quarterNote);
     if (!latest) diagnostics.notes.push("no concall entry found — quarter unconfirmed");
 
     const transcript_available = !!latest?.transcript;
@@ -191,6 +190,7 @@ async function main() {
         slug,
         sector: parsed.sector,
         sub_sector: parsed.sub_sector,
+        is_financial: parsed.is_financial, // lender (bank/NBFC): no EBITDA/OPM → non-fatal in selfCheck
         screener_url: src,
         quarter,
         quarter_confirmed,
@@ -228,8 +228,8 @@ async function main() {
         market_cap_cr: prov(src, "Screener top-ratio 'Market Cap'"),
         net_debt_cr: prov(src, inp.net_debt_note || "Screener balance sheet: borrowings − cash"),
         revenue: prov(src, "Screener P&L, Mar-2026 column (Sales)"),
-        ebitda: prov(src, "Screener P&L, Mar-2026 column (Operating Profit)"),
-        ebitda_margin_pct: prov(src, "Screener P&L (OPM %)"),
+        ebitda: prov(src, "Screener P&L, Mar-2026 column (Operating Profit; Financing Profit for lenders)"),
+        ebitda_margin_pct: prov(src, "Screener P&L (OPM %; Financing Margin % for lenders)"),
         pat: prov(src, "Screener P&L (Net Profit)"),
         net_margin_pct: prov(src, "derived: PAT / revenue"),
         gross_margin_pct: prov(src, "not reported by Screener — left null"),
