@@ -24,11 +24,13 @@ const goodTranscript = { chars: 60000 };
   ok(c.ok && c.critical.length === 0, "complete non-financial bundle → ok, no criticals");
 }
 
-// non-financial with a missing EBITDA → FATAL (the guardrail for manufacturers is preserved)
+// ANY company with a missing EBITDA → NOT fatal (best-effort: EBITDA is null-tolerant everywhere,
+// so a gap degrades the report rather than denying it — the whole point of "always move forward").
 {
   const b = baseBundle(); b.fy26a.ebitda = null;
   const c = selfCheck(b, goodTranscript);
-  ok(!c.ok && c.critical.some((p) => /fy26a\.ebitda/.test(p)), "non-financial + missing EBITDA → fatal (guardrail kept)");
+  ok(c.ok, "non-financial + missing EBITDA → ok (best-effort, not a blocker)");
+  ok(c.critical.every((p) => !/fy26a\.ebitda/.test(p)), "missing EBITDA is never counted critical");
 }
 
 // LENDER (bank/NBFC) with a missing EBITDA → NOT fatal (Five-Star regression: the report still runs)

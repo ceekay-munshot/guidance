@@ -100,6 +100,31 @@ export function quarterFromTitle(title) {
   return `Q${m[1]}FY${yy}`;
 }
 
+/** Sortable order for a "QxFYyy" string (higher = more recent), or null if unparseable. */
+export function quarterOrder(q) {
+  const m = String(q || "").match(/^Q([1-4])FY(\d{2})$/);
+  return m ? Number(m[2]) * 4 + Number(m[1]) : null;
+}
+
+/**
+ * Reconcile the quarter parsed from the ACTUAL latest concall (`parsedQ`) with the date-heuristic's
+ * expectation (`expQ`). We always analyse the real parsed quarter when we have one — expQ is only a
+ * sanity reference, and the fallback when nothing parsed. Returns { quarter, confirmed, note }:
+ *   - confirmed = we read a real quarter that is at least as recent as expected. A company that
+ *     reported EARLY (parsed quarter newer than expected) is still confirmed; only a missing parse or
+ *     an OLDER-than-expected (stale) quarter is unconfirmed.
+ *   - note = a correctly-worded diagnostic for the early / stale / fallback cases — never the old
+ *     misleading "expected quarter may not be posted" when a newer quarter is in fact already posted.
+ */
+export function resolveQuarter(parsedQ, expQ) {
+  const quarter = parsedQ || expQ || null;
+  const p = quarterOrder(parsedQ), e = quarterOrder(expQ);
+  if (!parsedQ) return { quarter, confirmed: false, note: expQ ? `no quarter could be read from the latest concall — using the date-expected ${expQ} (unconfirmed).` : null };
+  if (e == null || p == null || p === e) return { quarter, confirmed: true, note: null };
+  if (p > e) return { quarter, confirmed: true, note: `latest posted concall is ${parsedQ} — more recent than the ${expQ} expected by the usual reporting lag (company reported early); analysing ${parsedQ}.` };
+  return { quarter, confirmed: false, note: `latest posted concall is ${parsedQ}, older than the ${expQ} expected by now — ${expQ} may not be posted yet; analysing the latest available (${parsedQ}).` };
+}
+
 /** Wrap a value with its provenance so every number in the bundle says where it came from. */
 export function sourced(value, source, note) {
   const o = { value: value ?? null, source: source ?? null };
