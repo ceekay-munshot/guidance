@@ -191,6 +191,7 @@ async function main() {
         slug,
         sector: parsed.sector,
         sub_sector: parsed.sub_sector,
+        is_financial: parsed.is_financial, // lender (bank/NBFC): no EBITDA/OPM → non-fatal in selfCheck
         screener_url: src,
         quarter,
         quarter_confirmed,
@@ -228,8 +229,8 @@ async function main() {
         market_cap_cr: prov(src, "Screener top-ratio 'Market Cap'"),
         net_debt_cr: prov(src, inp.net_debt_note || "Screener balance sheet: borrowings − cash"),
         revenue: prov(src, "Screener P&L, Mar-2026 column (Sales)"),
-        ebitda: prov(src, "Screener P&L, Mar-2026 column (Operating Profit)"),
-        ebitda_margin_pct: prov(src, "Screener P&L (OPM %)"),
+        ebitda: prov(src, "Screener P&L, Mar-2026 column (Operating Profit; Financing Profit for lenders)"),
+        ebitda_margin_pct: prov(src, "Screener P&L (OPM %; Financing Margin % for lenders)"),
         pat: prov(src, "Screener P&L (Net Profit)"),
         net_margin_pct: prov(src, "derived: PAT / revenue"),
         gross_margin_pct: prov(src, "not reported by Screener — left null"),

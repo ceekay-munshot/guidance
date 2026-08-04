@@ -6,11 +6,15 @@
 export function selfCheck(b, transcript, minChars = 2000) {
   const problems = [];
   const finite = (v) => typeof v === "number" && isFinite(v);
+  // Lenders (banks / NBFCs) report "Financing Profit", not EBITDA/OPM — a missing EBITDA is expected
+  // for them, so it's downgraded to a note below. Revenue + PAT stay required for every company.
+  const isFinancial = !!b.meta?.is_financial;
 
   for (const k of ["cmp", "shares_out_cr", "market_cap_cr"]) if (!finite(b.inputs?.[k])) problems.push(`inputs.${k} missing/non-finite`);
   if (typeof b.inputs?.cmp_date !== "string") problems.push("inputs.cmp_date missing");
   if (!finite(b.inputs?.net_debt_cr)) problems.push("inputs.net_debt_cr missing (note, not fatal)");
-  for (const k of ["revenue", "ebitda", "pat"]) if (!finite(b.fy26a?.[k])) problems.push(`fy26a.${k} missing/non-finite`);
+  for (const k of ["revenue", "pat"]) if (!finite(b.fy26a?.[k])) problems.push(`fy26a.${k} missing/non-finite`);
+  if (!finite(b.fy26a?.ebitda)) problems.push(`fy26a.ebitda missing/non-finite${isFinancial ? " (lender — note, not fatal)" : ""}`);
 
   // consistency: market cap ≈ cmp × shares (within 2%)
   if (finite(b.inputs?.cmp) && finite(b.inputs?.shares_out_cr) && finite(b.inputs?.market_cap_cr)) {
@@ -26,7 +30,11 @@ export function selfCheck(b, transcript, minChars = 2000) {
   }
 
   // critical = required numbers present + a transcript that's either fetched or legitimately
-  // absent-with-reason. net_debt / consistency notes are warnings, not blockers.
-  const critical = problems.filter((p) => /inputs\.(cmp|shares_out|market_cap)|fy26a\.(revenue|ebitda|pat)|cmp_date|transcript/i.test(p));
+  // absent-with-reason. net_debt / consistency notes are warnings, not blockers. EBITDA is required
+  // for non-lenders only — banks/NBFCs have none (see isFinancial above), so it never blocks them.
+  const critical = problems.filter((p) => {
+    if (/fy26a\.ebitda/i.test(p)) return !isFinancial;
+    return /inputs\.(cmp|shares_out|market_cap)|fy26a\.(revenue|pat)|cmp_date|transcript/i.test(p);
+  });
   return { ok: critical.length === 0, critical, problems };
 }

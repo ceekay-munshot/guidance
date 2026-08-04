@@ -111,6 +111,7 @@ jobs:
           node pipeline/test/research.test.mjs
           node pipeline/test/model.test.mjs
           node pipeline/test/salvage.test.mjs
+          node pipeline/test/selfcheck.test.mjs
           node worker/test/worker.test.mjs
           node worker/test/analyze.test.mjs
           node worker/test/export.test.mjs
